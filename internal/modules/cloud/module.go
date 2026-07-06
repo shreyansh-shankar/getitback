@@ -81,13 +81,19 @@ func (m *CloudModule) Inventory(ctx context.Context) (*module.InventoryResult, e
 		}
 		details = append(details, detail)
 
-		key := cli.binary + "Auth"
-		meta[key] = auth
+		safeKey := strings.ReplaceAll(strings.ToLower(cli.name), " ", "_")
+		meta[safeKey+"_auth"] = map[bool]string{true: "yes", false: "no"}[auth]
+		meta[safeKey+"_cli"] = cli.binary
 		if account != "" {
-			meta[cli.binary+"Account"] = account
+			meta[safeKey+"_account"] = account
 		}
 		if config != "" {
-			meta[cli.binary+"Config"] = config
+			meta[safeKey+"_config"] = config
+		}
+		if auth && config != "" {
+			if _, err := os.Stat(config); err == nil {
+				meta[safeKey+"_credentials"] = "present"
+			}
 		}
 	}
 

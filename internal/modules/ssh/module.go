@@ -97,6 +97,7 @@ func (m *SSHModule) Inventory(ctx context.Context) (*module.InventoryResult, err
 
 	meta := make(map[string]any)
 	meta["identityCount"] = len(identityNames)
+	meta["keys"] = len(identityNames)
 	if len(identityNames) > 0 {
 		meta["identities"] = identityNames
 	}

@@ -68,7 +68,7 @@ func (m *GPGModule) Inventory(ctx context.Context) (*module.InventoryResult, err
 				}
 			}
 		}
-		result.Metadata = map[string]any{"keys": keys}
+		result.Metadata = map[string]any{"keys": keys, "keyCount": len(keys)}
 	}
 
 	return result, nil
