@@ -1,0 +1,298 @@
+package repos
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/shreyansh-shankar/getitback/internal/module"
+)
+
+type ReposModule struct{}
+
+func NewModule() *ReposModule { return &ReposModule{} }
+
+func (m *ReposModule) Name() string        { return "repos" }
+func (m *ReposModule) Description() string { return "Git repository discovery" }
+
+func (m *ReposModule) Detect() (bool, error) {
+	_, err := exec.LookPath("git")
+	return err == nil, nil
+}
+
+type repoInfo struct {
+	name       string
+	path       string
+	remote     string
+	provider   string
+	branch     string
+	defaultBr  string
+	dirty      bool
+	ahead      int
+	behind     int
+	lastCommit time.Time
+	hasSubmod  bool
+	lfsEnabled bool
+}
+
+var devDirs = []string{
+	"Projects",
+	"Code",
+	"Workspace",
+	"Development",
+}
+
+func (m *ReposModule) Inventory(ctx context.Context) (*module.InventoryResult, error) {
+	result := &module.InventoryResult{Module: m.Name(), Detected: true}
+	meta := make(map[string]any)
+
+	home, _ := os.UserHomeDir()
+	var repos []repoInfo
+
+	for _, dir := range devDirs {
+		searchPath := filepath.Join(home, dir)
+		entries, err := os.ReadDir(searchPath)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			repoPath := filepath.Join(searchPath, entry.Name())
+			gitDir := filepath.Join(repoPath, ".git")
+			if info, err := os.Stat(gitDir); err != nil || !info.IsDir() {
+				continue
+			}
+			repos = append(repos, repoInfo{name: entry.Name(), path: repoPath})
+		}
+	}
+
+	// Also scan home for dotfile repos
+	gitDir := filepath.Join(home, ".git")
+	if info, err := os.Stat(gitDir); err == nil && info.IsDir() {
+		isBare := false
+		if cfg, err := os.ReadFile(filepath.Join(gitDir, "config")); err == nil {
+			if strings.Contains(string(cfg), "bare = true") {
+				isBare = true
+			}
+		}
+		if isBare {
+			repos = append(repos, repoInfo{name: ".dotfiles (bare)", path: home + "/.git"})
+		}
+	}
+
+	if len(repos) == 0 {
+		return result, nil
+	}
+
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 10)
+	var mu sync.Mutex
+
+	for i := range repos {
+		wg.Add(1)
+		go func(r *repoInfo) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			fetchRepoInfo(r)
+			mu.Lock()
+			mu.Unlock()
+		}(&repos[i])
+	}
+	wg.Wait()
+
+	total := len(repos)
+	var dirty, noRemote, github, gitlab, localOnly int
+	var providers []string
+
+	for _, r := range repos {
+		if r.dirty {
+			dirty++
+		}
+		if r.remote == "" {
+			noRemote++
+		}
+		switch r.provider {
+		case "github.com":
+			github++
+		case "gitlab.com":
+			gitlab++
+		case "":
+			localOnly++
+		}
+		if r.provider != "" {
+			providers = append(providers, r.provider)
+		}
+	}
+
+	meta["totalRepos"] = total
+	meta["dirtyRepos"] = dirty
+	meta["noRemoteRepos"] = noRemote
+	meta["githubRepos"] = github
+	meta["gitlabRepos"] = gitlab
+	meta["localOnlyRepos"] = localOnly
+
+	if len(providers) > 0 {
+		providerSet := make(map[string]int)
+		for _, p := range providers {
+			providerSet[p]++
+		}
+		var providerSummary []string
+		for p, c := range providerSet {
+			providerSummary = append(providerSummary, fmt.Sprintf("%s:%d", p, c))
+		}
+		meta["remoteProviders"] = providerSummary
+	}
+
+	if dirty > 0 {
+		result.Warnings = append(result.Warnings,
+			fmt.Sprintf("%d repositories have uncommitted changes", dirty))
+	}
+	if noRemote > 0 {
+		result.Warnings = append(result.Warnings,
+			fmt.Sprintf("%d repositories have no remote configured", noRemote))
+	}
+
+	if len(meta) > 0 {
+		result.Metadata = meta
+	}
+	return result, nil
+}
+
+func fetchRepoInfo(r *repoInfo) {
+	git := func(args ...string) (string, error) {
+		cmd := exec.Command("git", append([]string{
+			"-C", r.path,
+		}, args...)...)
+		out, err := cmd.Output()
+		if err != nil {
+			return "", err
+		}
+		return strings.TrimSpace(string(out)), nil
+	}
+
+	if branch, err := git("rev-parse", "--abbrev-ref", "HEAD"); err == nil {
+		r.branch = branch
+	}
+
+	if def, err := git("symbolic-ref", "refs/remotes/origin/HEAD"); err == nil {
+		r.defaultBr = strings.TrimPrefix(def, "refs/remotes/origin/")
+	}
+
+	if remote, err := git("config", "--get", "remote.origin.url"); err == nil {
+		r.remote = remote
+		for _, provider := range []string{"github.com", "gitlab.com", "bitbucket.org"} {
+			if strings.Contains(remote, provider) {
+				r.provider = provider
+				break
+			}
+		}
+	}
+
+	if out, err := git("status", "--porcelain"); err == nil {
+		r.dirty = strings.TrimSpace(out) != ""
+	}
+
+	if out, err := git("rev-list", "--count", "--left-right", "HEAD...@{u}"); err == nil {
+		parts := strings.Fields(out)
+		if len(parts) == 2 {
+			fmt.Sscanf(parts[0], "%d", &r.ahead)
+			fmt.Sscanf(parts[1], "%d", &r.behind)
+		}
+	}
+
+	if out, err := git("log", "-1", "--format=%ct"); err == nil {
+		var ts int64
+		fmt.Sscanf(out, "%d", &ts)
+		r.lastCommit = time.Unix(ts, 0)
+	}
+
+	if _, err := git("submodule", "status"); err == nil {
+		r.hasSubmod = true
+	}
+
+	if _, err := git("lfs", "env"); err == nil {
+		r.lfsEnabled = true
+	}
+}
+
+func (m *ReposModule) Backup(ctx context.Context, opts module.BackupOptions) (*module.BackupResult, error) {
+	return nil, nil
+}
+
+func (m *ReposModule) Restore(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) error {
+	return nil
+}
+
+func (m *ReposModule) Verify(ctx context.Context, snap module.Snapshot) (*module.VerifyResult, error) {
+	return &module.VerifyResult{Module: m.Name(), Snapshot: snap, Valid: true}, nil
+}
+
+func (m *ReposModule) Doctor(ctx context.Context) (*module.DoctorResult, error) {
+	result := &module.DoctorResult{Module: m.Name(), Status: module.DoctorStatusOK}
+	home, _ := os.UserHomeDir()
+
+	for _, dir := range devDirs {
+		searchPath := filepath.Join(home, dir)
+		entries, err := os.ReadDir(searchPath)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			repoPath := filepath.Join(searchPath, entry.Name())
+			gitDir := filepath.Join(repoPath, ".git")
+			if info, err := os.Stat(gitDir); err != nil || !info.IsDir() {
+				continue
+			}
+
+			out, err := exec.Command("git", "-C", repoPath, "status", "--porcelain").Output()
+			if err == nil && strings.TrimSpace(string(out)) != "" {
+				result.Issues = append(result.Issues, module.DoctorIssue{
+					Severity: "info",
+					Message:  fmt.Sprintf("Repository %q has uncommitted changes", entry.Name()),
+					Help:     "Run: git -C " + repoPath + " add && git commit",
+				})
+			}
+
+			out, err = exec.Command("git", "-C", repoPath, "rev-list", "--count", "--left-right", "HEAD...@{u}").Output()
+			if err == nil {
+				parts := strings.Fields(string(out))
+				if len(parts) == 2 {
+					var ahead, behind int
+					fmt.Sscanf(parts[0], "%d", &ahead)
+					fmt.Sscanf(parts[1], "%d", &behind)
+					if ahead > 0 {
+						result.Issues = append(result.Issues, module.DoctorIssue{
+							Severity: "info",
+							Message:  fmt.Sprintf("Repository %q is %d commits ahead of remote", entry.Name(), ahead),
+							Help:     "Run: git -C " + repoPath + " push",
+						})
+					}
+					if behind > 0 {
+						result.Issues = append(result.Issues, module.DoctorIssue{
+							Severity: "info",
+							Message:  fmt.Sprintf("Repository %q is %d commits behind remote", entry.Name(), behind),
+							Help:     "Run: git -C " + repoPath + " pull",
+						})
+					}
+				}
+			}
+		}
+	}
+
+	if len(result.Issues) > 0 {
+		result.Status = module.DoctorStatusWarning
+	}
+	return result, nil
+}
