@@ -118,7 +118,7 @@ func (m *NodeModule) Restore(ctx context.Context, snap module.Snapshot, opts mod
 		home = rt.OS.HomeDir
 	}
 
-	tmpDir, err := os.MkdirTemp("", "getitback-restore-nodejs-*")
+	tmpDir, err := os.MkdirTemp(opts.WorkDir, "getitback-restore-nodejs-*")
 	if err != nil {
 		return err
 	}

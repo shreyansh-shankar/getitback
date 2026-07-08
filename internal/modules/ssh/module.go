@@ -242,8 +242,12 @@ func (m *SSHModule) Validate(ctx context.Context, snap module.Snapshot) (*module
 
 	if dirExists {
 		entries, _ := os.ReadDir(sshDir)
-		var keyCount, validKeys int
+		var keyCount, validKeys, pubKeyCount int
 		for _, entry := range entries {
+			// Skip backup files created during restore
+			if strings.HasSuffix(entry.Name(), ".getitback-bak") {
+				continue
+			}
 			if isPrivateKey(entry.Name()) {
 				keyCount++
 				info, _ := entry.Info()
@@ -253,6 +257,10 @@ func (m *SSHModule) Validate(ctx context.Context, snap module.Snapshot) (*module
 				} else {
 					v.Missing("proper permissions: " + entry.Name())
 				}
+			}
+			if strings.HasSuffix(entry.Name(), ".pub") {
+				pubKeyCount++
+				v.Recovered("public key: " + entry.Name())
 			}
 		}
 		if keyCount > 0 {
@@ -308,18 +316,27 @@ func (m *SSHModule) Actions(ctx context.Context, snap module.Snapshot, opts modu
 }
 
 func isPrivateKey(name string) bool {
-	if privateKeyNames[name] {
-		return true
+	// Strip backup suffix if present
+	base := name
+	if strings.HasSuffix(base, ".getitback-bak") {
+		base = strings.TrimSuffix(base, ".getitback-bak")
 	}
-	if strings.HasSuffix(name, ".pub") {
+
+	// Public key files are never private keys
+	if strings.HasSuffix(base, ".pub") {
 		return false
 	}
+
+	if privateKeyNames[base] {
+		return true
+	}
+
 	knownFiles := map[string]bool{
 		"config": true, "known_hosts": true, "known_hosts.old": true,
 		"authorized_keys": true, "authorized_keys2": true,
 		"environment": true, "rc": true,
 	}
-	return !knownFiles[name]
+	return !knownFiles[base]
 }
 
 type restoreUtilAction struct {

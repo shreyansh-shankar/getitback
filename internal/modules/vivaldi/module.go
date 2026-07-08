@@ -98,7 +98,7 @@ func (m *VivaldiModule) Backup(ctx context.Context, opts module.BackupOptions) (
 
 func (m *VivaldiModule) Restore(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) error {
 	home, _ := os.UserHomeDir()
-	tmpDir, err := os.MkdirTemp("", "getitback-restore-vivaldi-*")
+	tmpDir, err := os.MkdirTemp(opts.WorkDir, "getitback-restore-vivaldi-*")
 	if err != nil {
 		return err
 	}

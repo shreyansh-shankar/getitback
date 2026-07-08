@@ -344,7 +344,7 @@ func (m *CloudModule) Restore(ctx context.Context, snap module.Snapshot, opts mo
 	if rt != nil && rt.OS.HomeDir != "" {
 		home = rt.OS.HomeDir
 	}
-	tmpDir, err := os.MkdirTemp("", "getitback-restore-cloud-*")
+	tmpDir, err := os.MkdirTemp(opts.WorkDir, "getitback-restore-cloud-*")
 	if err != nil {
 		return fmt.Errorf("cloud: create temp dir: %w", err)
 	}

@@ -79,17 +79,28 @@ type Dependency struct {
 	Hint     string         `json:"hint,omitempty"`
 }
 
+type ValidateCategory string
+
+const (
+	ValidateCategoryArchive       ValidateCategory = "archive"       // archive extracted successfully
+	ValidateCategoryConfig        ValidateCategory = "config"        // configuration files valid
+	ValidateCategorySoftware      ValidateCategory = "software"      // software installed
+	ValidateCategoryService       ValidateCategory = "service"       // service running
+	ValidateCategoryUsable        ValidateCategory = "usable"        // application usable
+)
+
 type ValidateResult struct {
-	Module     string   `json:"module"`
-	Success    bool     `json:"success"`
-	Version    string   `json:"version,omitempty"`
-	Checks     []string `json:"checks,omitempty"`
-	Warnings   []string `json:"warnings,omitempty"`
-	Errors     []string `json:"errors,omitempty"`
-	ManualSteps []string `json:"manualSteps,omitempty"`
-	Recovered  []string `json:"recovered,omitempty"`
-	Missing    []string `json:"missing,omitempty"`
-	Confidence int      `json:"confidence"` // 0–100
+	Module      string           `json:"module"`
+	Success     bool             `json:"success"`
+	Category    ValidateCategory `json:"category,omitempty"`
+	Version     string           `json:"version,omitempty"`
+	Checks      []string         `json:"checks,omitempty"`
+	Warnings    []string         `json:"warnings,omitempty"`
+	Errors      []string         `json:"errors,omitempty"`
+	ManualSteps []string         `json:"manualSteps,omitempty"`
+	Recovered   []string         `json:"recovered,omitempty"`
+	Missing     []string         `json:"missing,omitempty"`
+	Confidence  int              `json:"confidence"` // 0–100
 }
 
 // Runtime is an interface that internal/runtime.Runtime satisfies.
@@ -99,12 +110,23 @@ type Runtime interface {
 	// Reserve for future use — type assertion at point of use.
 }
 
+type OverwritePolicy string
+
+const (
+	OverwritePolicyBackup    OverwritePolicy = "backup"     // rename existing with .getitback-bak
+	OverwritePolicyReplace   OverwritePolicy = "replace"    // overwrite without backup
+	OverwritePolicySkip      OverwritePolicy = "skip"       // skip if exists
+	OverwritePolicyMerge     OverwritePolicy = "merge"      // merge (directory merge, skip individual files)
+)
+
 type RestoreOptions struct {
-	SnapshotsDir string
-	Decrypt      bool
-	KeyPath      string
-	BackupDir    string
-	Runtime      Runtime // optional, injected by restore engine
+	SnapshotsDir    string
+	Decrypt         bool
+	KeyPath         string
+	BackupDir       string
+	WorkDir         string           // working directory for temp extraction (falls back: --workdir > GETITBACK_WORKDIR > $HOME/.cache/getitback > /tmp)
+	Runtime         Runtime          // optional, injected by restore engine
+	OverwritePolicy OverwritePolicy  // how to handle existing files
 }
 
 type VerifyResult struct {

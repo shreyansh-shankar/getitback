@@ -235,7 +235,7 @@ func (m *MySQLModule) Backup(ctx context.Context, opts module.BackupOptions) (*m
 }
 
 func (m *MySQLModule) Restore(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) error {
-	tmpDir, err := os.MkdirTemp("", "getitback-restore-mysql-*")
+	tmpDir, err := os.MkdirTemp(opts.WorkDir, "getitback-restore-mysql-*")
 	if err != nil {
 		return fmt.Errorf("mysql: create temp dir: %w", err)
 	}

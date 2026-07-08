@@ -91,7 +91,7 @@ func (m *PostgresModule) Backup(ctx context.Context, opts module.BackupOptions) 
 }
 
 func (m *PostgresModule) Restore(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) error {
-	tmpDir, err := os.MkdirTemp("", "getitback-restore-postgres-*")
+	tmpDir, err := os.MkdirTemp(opts.WorkDir, "getitback-restore-postgres-*")
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
 	}

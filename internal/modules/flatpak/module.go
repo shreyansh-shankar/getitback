@@ -115,7 +115,7 @@ func (m *FlatpakModule) Backup(ctx context.Context, opts module.BackupOptions) (
 }
 
 func (m *FlatpakModule) Restore(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) error {
-	tmpDir, err := os.MkdirTemp("", "getitback-restore-flatpak-*")
+	tmpDir, err := os.MkdirTemp(opts.WorkDir, "getitback-restore-flatpak-*")
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
 	}

@@ -245,7 +245,7 @@ func (m *VSCodeModule) Actions(ctx context.Context, snap module.Snapshot, opts m
 		name: "vscode_extract_configs",
 		desc: "Extract VS Code settings and keybindings",
 		fn: func(ctx *runtime.RestoreContext) error {
-			tmpDir, err := os.MkdirTemp("", "getitback-restore-vscode-*")
+			tmpDir, err := os.MkdirTemp(opts.WorkDir, "getitback-restore-vscode-*")
 			if err != nil {
 				return err
 			}
@@ -275,7 +275,7 @@ func (m *VSCodeModule) Actions(ctx context.Context, snap module.Snapshot, opts m
 		name: "vscode_install_extensions",
 		desc: "Install VS Code extensions from backup",
 		fn: func(ctx *runtime.RestoreContext) error {
-			tmpDir, err := os.MkdirTemp("", "getitback-extensions-*")
+			tmpDir, err := os.MkdirTemp(opts.WorkDir, "getitback-extensions-*")
 			if err != nil {
 				return err
 			}

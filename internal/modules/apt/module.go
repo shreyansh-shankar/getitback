@@ -147,7 +147,7 @@ func (m *AptModule) Backup(ctx context.Context, opts module.BackupOptions) (*mod
 }
 
 func (m *AptModule) Restore(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) error {
-	tmpDir, err := os.MkdirTemp("", "getitback-restore-apt-*")
+	tmpDir, err := os.MkdirTemp(opts.WorkDir, "getitback-restore-apt-*")
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
 	}

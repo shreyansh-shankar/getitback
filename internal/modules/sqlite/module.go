@@ -93,7 +93,7 @@ func (m *SQLiteModule) Backup(ctx context.Context, opts module.BackupOptions) (*
 
 func (m *SQLiteModule) Restore(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) error {
 	home, _ := os.UserHomeDir()
-	tmpDir, err := os.MkdirTemp("", "getitback-restore-sqlite-*")
+	tmpDir, err := os.MkdirTemp(opts.WorkDir, "getitback-restore-sqlite-*")
 	if err != nil {
 		return err
 	}

@@ -340,7 +340,7 @@ func (m *CertsModule) Backup(ctx context.Context, opts module.BackupOptions) (*m
 
 func (m *CertsModule) Restore(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) error {
 	home, _ := os.UserHomeDir()
-	tmpDir, err := os.MkdirTemp("", "getitback-restore-certs-*")
+	tmpDir, err := os.MkdirTemp(opts.WorkDir, "getitback-restore-certs-*")
 	if err != nil {
 		return fmt.Errorf("certs: create temp dir: %w", err)
 	}

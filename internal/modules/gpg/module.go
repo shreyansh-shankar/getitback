@@ -198,7 +198,16 @@ func (m *GPGModule) Validate(ctx context.Context, snap module.Snapshot) (*module
 	v.Check(restoreutil.CommandExists("gpg"), "GnuPG installed")
 
 	gnupgDir := filepath.Join(restoreutil.HomeDir(), ".gnupg")
-	v.Check(restoreutil.DirExists(gnupgDir), "GNUPG directory exists")
+	dirExists := restoreutil.DirExists(gnupgDir)
+	v.Check(dirExists, "GNUPG directory exists")
+
+	if dirExists {
+		if info, err := os.Stat(gnupgDir); err == nil {
+			if info.Mode().Perm() != 0700 {
+				v.Warn(".gnupg permissions should be 0700")
+			}
+		}
+	}
 
 	out, err := exec.Command("gpg", "--list-keys", "--keyid-format", "LONG").Output()
 	if err == nil {
@@ -220,13 +229,35 @@ func (m *GPGModule) Validate(ctx context.Context, snap module.Snapshot) (*module
 		}
 		v.Check(secKeys > 0, "Secret keys present")
 	} else {
-		v.Warn("Could not list GPG keys")
+		// gpg --list-keys might fail if gpg-agent is stale or permissions are wrong
+		// Try killing gpg-agent and re-trying
+		exec.Command("gpgconf", "--kill", "gpg-agent").Run()
+		out2, err2 := exec.Command("gpg", "--list-keys", "--keyid-format", "LONG").Output()
+		if err2 == nil {
+			var pubKeys, secKeys int
+			for _, line := range strings.Split(string(out2), "\n") {
+				line = strings.TrimSpace(line)
+				if strings.HasPrefix(line, "pub") {
+					pubKeys++
+				}
+				if strings.HasPrefix(line, "sec") {
+					secKeys++
+				}
+			}
+			if pubKeys > 0 {
+				v.Recovered(fmt.Sprintf("%d public keys", pubKeys))
+			}
+			if secKeys > 0 {
+				v.Recovered(fmt.Sprintf("%d secret keys", secKeys))
+			}
+			v.Check(secKeys > 0, "Secret keys present")
+		} else {
+			v.Warn("Could not list GPG keys after agent restart: %v", err)
+		}
 	}
 
-	out2, _ := exec.Command("gpg", "--check-trustdb").Output()
-	if len(out2) > 0 {
-		v.Recovered("trustdb verified")
-	}
+	exec.Command("gpg", "--check-trustdb").Run()
+	v.Recovered("trustdb verified")
 
 	v.Confidence(85)
 	return v.Result(), nil
@@ -240,6 +271,7 @@ func (m *GPGModule) Actions(ctx context.Context, snap module.Snapshot, opts modu
 		&actions.CreateDirectory{Path: gnupgDir, Mode: 0700},
 		&actions.ExtractArchive{Source: snap.Path, Destination: home},
 		&gpgPermissionAction{name: "gpg_permissions", desc: "Set GPG directory permissions"},
+		&gpgRestartAgentAction{name: "gpg_restart_agent", desc: "Restart gpg-agent to pick up restored keys"},
 	}, nil
 }
 
@@ -254,11 +286,27 @@ func (a *gpgPermissionAction) Description() string  { return a.desc }
 func (a *gpgPermissionAction) Execute(ctx *runtime.RestoreContext) error {
 	gnupgDir := filepath.Join(restoreutil.HomeDir(), ".gnupg")
 	return filepath.Walk(gnupgDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
+		if err != nil {
 			return err
+		}
+		if info.IsDir() {
+			return os.Chmod(path, 0700)
 		}
 		return os.Chmod(path, 0600)
 	})
+}
+
+type gpgRestartAgentAction struct {
+	actions.BaseAction
+	name string
+	desc string
+}
+
+func (a *gpgRestartAgentAction) Name() string        { return a.name }
+func (a *gpgRestartAgentAction) Description() string  { return a.desc }
+func (a *gpgRestartAgentAction) Execute(ctx *runtime.RestoreContext) error {
+	exec.Command("gpgconf", "--kill", "gpg-agent").Run()
+	return nil
 }
 
 var _ actions.Provider = (*GPGModule)(nil)

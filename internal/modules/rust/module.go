@@ -140,7 +140,7 @@ func (m *RustModule) Restore(ctx context.Context, snap module.Snapshot, opts mod
 	cargoDir := filepath.Join(home, ".cargo")
 	os.MkdirAll(cargoDir, 0755)
 
-	tmpDir, err := os.MkdirTemp("", "getitback-restore-rust-*")
+	tmpDir, err := os.MkdirTemp(opts.WorkDir, "getitback-restore-rust-*")
 	if err != nil {
 		return err
 	}

@@ -75,7 +75,7 @@ func (m *MongoDBModule) Backup(ctx context.Context, opts module.BackupOptions) (
 }
 
 func (m *MongoDBModule) Restore(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) error {
-	tmpDir, err := os.MkdirTemp("", "getitback-restore-mongodb-*")
+	tmpDir, err := os.MkdirTemp(opts.WorkDir, "getitback-restore-mongodb-*")
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
 	}

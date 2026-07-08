@@ -7,6 +7,7 @@ type ServiceManager interface {
 	Stop(name string) error
 	Restart(name string) error
 	Status(name string) (active bool, err error)
+	Exists(name string) bool
 	Reload() error
 	Name() string
 }

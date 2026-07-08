@@ -17,6 +17,10 @@ func NewProgressReporter(w io.Writer, total int) *ProgressReporter {
 	return &ProgressReporter{w: w, total: total}
 }
 
+func (p *ProgressReporter) Write(b []byte) (int, error) {
+	return p.w.Write(b)
+}
+
 func (p *ProgressReporter) Stage(stage, title string) {
 	fmt.Fprintf(p.w, "\n  %s%s%s\n",
 		output.ColorBold+output.ColorCyan,

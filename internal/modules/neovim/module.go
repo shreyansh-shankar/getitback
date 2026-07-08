@@ -101,7 +101,7 @@ func (m *NeovimModule) Restore(ctx context.Context, snap module.Snapshot, opts m
 	if rt, ok := opts.Runtime.(*runtime.Runtime); ok && rt.OS.HomeDir != "" {
 		home = rt.OS.HomeDir
 	}
-	tmpDir, err := os.MkdirTemp("", "getitback-restore-neovim-*")
+	tmpDir, err := os.MkdirTemp(opts.WorkDir, "getitback-restore-neovim-*")
 	if err != nil {
 		return err
 	}

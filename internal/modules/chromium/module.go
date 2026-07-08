@@ -102,7 +102,7 @@ func (m *ChromiumModule) Backup(ctx context.Context, opts module.BackupOptions) 
 
 func (m *ChromiumModule) Restore(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) error {
 	home, _ := os.UserHomeDir()
-	tmpDir, err := os.MkdirTemp("", "getitback-restore-chromium-*")
+	tmpDir, err := os.MkdirTemp(opts.WorkDir, "getitback-restore-chromium-*")
 	if err != nil {
 		return err
 	}

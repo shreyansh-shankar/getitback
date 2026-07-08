@@ -1,6 +1,8 @@
 package servicemgr
 
 import (
+	"strings"
+
 	"github.com/shreyansh-shankar/getitback/internal/runtime/executor"
 )
 
@@ -40,6 +42,31 @@ func (s *Systemd) Status(name string) (bool, error) {
 		return false, nil
 	}
 	return res.Stdout == "active\n", nil
+}
+
+func (s *Systemd) Exists(name string) bool {
+	res := s.exec.RunCapture("systemctl", append(s.prefix(), "list-units", "--type=service", "--all", "--no-legend")...)
+	if res.Err != nil {
+		return false
+	}
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && strings.HasPrefix(fields[0], name) {
+			return true
+		}
+	}
+	// Also check unit files
+	res2 := s.exec.RunCapture("systemctl", append(s.prefix(), "list-unit-files", "--type=service", "--no-legend")...)
+	if res2.Err != nil {
+		return false
+	}
+	for _, line := range strings.Split(res2.Stdout, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) > 0 && strings.HasPrefix(fields[0], name) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Systemd) Reload() error {

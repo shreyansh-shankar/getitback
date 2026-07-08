@@ -755,7 +755,7 @@ func (m *DockerModule) Backup(ctx context.Context, opts module.BackupOptions) (*
 func (m *DockerModule) Restore(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) error {
 	rt, _ := opts.Runtime.(*runtime.Runtime)
 
-	tmpDir, err := os.MkdirTemp("", "getitback-restore-docker-*")
+	tmpDir, err := os.MkdirTemp(opts.WorkDir, "getitback-restore-docker-*")
 	if err != nil {
 		return fmt.Errorf("docker: create temp dir: %w", err)
 	}

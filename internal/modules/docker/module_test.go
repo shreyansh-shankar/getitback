@@ -119,20 +119,18 @@ func TestDockerRestoreAction(t *testing.T) {
 
 	opts := module.RestoreOptions{
 		BackupDir: t.TempDir(),
+		WorkDir:   t.TempDir(),
 	}
-	actions, err := m.Actions(context.Background(), snap, opts)
+	actionList, err := m.Actions(context.Background(), snap, opts)
 	if err != nil {
 		t.Fatalf("Actions() returned error: %v", err)
 	}
-	if len(actions) != 2 {
-		t.Errorf("expected 2 actions, got %d", len(actions))
+	if len(actionList) != 1 {
+		t.Errorf("expected 1 action (streaming restore), got %d", len(actionList))
 	}
-	if len(actions) > 0 {
-		if actions[0].Name() != "extract_archive" {
-			t.Errorf("expected first action to be extract_archive, got %q", actions[0].Name())
-		}
-		if actions[1].Name() != "docker_full_restore" {
-			t.Errorf("expected second action to be docker_full_restore, got %q", actions[1].Name())
+	if len(actionList) > 0 {
+		if actionList[0].Name() != "docker_full_restore" {
+			t.Errorf("expected action to be docker_full_restore, got %q", actionList[0].Name())
 		}
 	}
 }

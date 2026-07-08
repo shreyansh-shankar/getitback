@@ -1,14 +1,17 @@
 package docker
 
 import (
+	"archive/tar"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 
+	"github.com/shreyansh-shankar/getitback/internal/archive"
 	"github.com/shreyansh-shankar/getitback/internal/module"
 	"github.com/shreyansh-shankar/getitback/internal/runtime"
 	"github.com/shreyansh-shankar/getitback/internal/runtime/actions"
@@ -16,30 +19,28 @@ import (
 
 func (m *DockerModule) Actions(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) ([]actions.Action, error) {
 	rt, _ := opts.Runtime.(*runtime.Runtime)
-	tmpDir, err := os.MkdirTemp("", "getitback-docker-restore-*")
-	if err != nil {
-		return nil, fmt.Errorf("docker: create temp dir: %w", err)
+	workDir := opts.WorkDir
+	if workDir == "" {
+		workDir = "/tmp"
 	}
 	home := homeDir(rt)
 
 	return []actions.Action{
-		&actions.ExtractArchive{
-			Source:      snap.Path,
-			Destination: tmpDir,
-		},
 		&restoreDockerAction{
-			tmpDir: tmpDir,
-			home:   home,
-			rt:     rt,
+			archivePath: snap.Path,
+			workDir:     workDir,
+			home:        home,
+			rt:          rt,
 		},
 	}, nil
 }
 
 type restoreDockerAction struct {
 	actions.BaseAction
-	tmpDir string
-	home   string
-	rt     *runtime.Runtime
+	archivePath string
+	workDir     string
+	home        string
+	rt          *runtime.Runtime
 }
 
 func (a *restoreDockerAction) Name() string { return "docker_full_restore" }
@@ -50,29 +51,33 @@ func (a *restoreDockerAction) Description() string {
 
 func (a *restoreDockerAction) Execute(ctx *runtime.RestoreContext) error {
 	eng := &dockerRestoreEngine{
-		tmpDir: a.tmpDir,
-		home:   a.home,
-		rt:     a.rt,
-		ctx:    ctx,
+		archivePath: a.archivePath,
+		workDir:     a.workDir,
+		home:        a.home,
+		rt:          a.rt,
+		restoreCtx:  ctx,
 	}
 	return eng.execute()
 }
 
 type dockerRestoreEngine struct {
-	tmpDir   string
-	home     string
-	rt       *runtime.Runtime
-	ctx      *runtime.RestoreContext
-	manifest dockerBackupManifest
+	archivePath string
+	workDir     string
+	home        string
+	rt          *runtime.Runtime
+	restoreCtx  *runtime.RestoreContext
+	manifest    dockerBackupManifest
 }
 
 func (e *dockerRestoreEngine) execute() error {
-	if err := e.loadManifest(); err != nil {
-		return err
+	workSub, err := os.MkdirTemp(e.workDir, "getitback-docker-*")
+	if err != nil {
+		return fmt.Errorf("docker: create work dir: %w", err)
 	}
+	defer os.RemoveAll(workSub)
 
+	// Phase 0: Install Docker Engine if not available
 	available := e.dockerAvailable()
-
 	if !available {
 		e.emit("Phase 1/8: Installing Docker Engine")
 		if err := e.installDocker(); err != nil {
@@ -86,43 +91,27 @@ func (e *dockerRestoreEngine) execute() error {
 		e.emit("Phase 1/8: Docker Engine already installed, skipping")
 	}
 
+	// Count items for progress reporting
+	imgCount, volCount := e.countItems()
 	e.emit("Phase 2/8: Restoring Docker configuration")
-	if err := e.restoreConfigs(); err != nil {
-		e.emit("Warning: config restore partial: %s", err)
-	}
-
 	e.emit("Phase 3/8: Restoring Docker contexts")
-	if err := e.restoreContexts(); err != nil {
-		e.emit("Warning: context restore partial: %s", err)
-	}
-
 	e.emit("Phase 4/8: Creating Docker networks")
-	if err := e.restoreNetworks(); err != nil {
-		e.emit("Warning: some networks could not be created: %s", err)
-	}
-
-	e.emit("Phase 5/8: Creating Docker volumes")
-	if err := e.restoreVolumes(); err != nil {
-		e.emit("Warning: some volumes could not be restored: %s", err)
-	}
-
+	e.emit("Phase 5/8: Creating and restoring Docker volumes")
 	e.emit("Phase 6/8: Loading Docker images")
-	if err := e.restoreImages(); err != nil {
-		e.emit("Warning: some images could not be loaded: %s", err)
+	e.emit("Phase 7/8: Restoring Compose projects")
+
+	if err := e.streamArchive(workSub, imgCount, volCount); err != nil {
+		return err
 	}
 
-	e.emit("Phase 7/8: Restoring Compose projects")
-	if err := e.restoreCompose(); err != nil {
-		e.emit("Warning: compose restore partial: %s", err)
-	}
+	// Apply configs, contexts, compose (extracted in streaming pass)
+	e.restoreConfigs(filepath.Join(workSub, "configs"))
+	e.restoreContexts(filepath.Join(workSub, "contexts"))
+	e.restoreNetworks()
+	e.restoreCompose(filepath.Join(workSub, "compose"))
 
 	e.emit("Starting Compose projects...")
-	if err := e.composeUp(); err != nil {
-		e.emit("Warning: compose up partial: %s", err)
-		for _, p := range e.manifest.Compose {
-			e.emit("  Manual: cd %s && docker compose up -d", filepath.Dir(p.File))
-		}
-	}
+	e.composeUp()
 
 	e.emit("Phase 8/8: Validation")
 	report := e.validate()
@@ -131,25 +120,187 @@ func (e *dockerRestoreEngine) execute() error {
 	return nil
 }
 
-func (e *dockerRestoreEngine) loadManifest() error {
-	var manifestPath string
-	filepath.Walk(e.tmpDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil || info.IsDir() {
-			return err
-		}
-		if filepath.Base(path) == "manifest.json" {
-			manifestPath = path
-		}
-		return nil
-	})
-	if manifestPath == "" {
-		return fmt.Errorf("no manifest found in snapshot")
-	}
-	data, err := os.ReadFile(manifestPath)
+func (e *dockerRestoreEngine) countItems() (images, volumes int) {
+	r, err := archive.OpenReader(e.archivePath)
 	if err != nil {
-		return fmt.Errorf("read manifest: %w", err)
+		return 0, 0
 	}
-	return json.Unmarshal(data, &e.manifest)
+	defer r.Close()
+	for {
+		hdr, err := r.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			break
+		}
+		name := filepath.ToSlash(hdr.Name)
+		switch {
+		case strings.HasPrefix(name, "images/") && strings.HasSuffix(name, ".tar"):
+			images++
+		case strings.HasPrefix(name, "volumes/") && strings.HasSuffix(name, ".tar.gz"):
+			volumes++
+		}
+	}
+	return
+}
+
+func (e *dockerRestoreEngine) streamArchive(workSub string, imgCount, volCount int) error {
+	r, err := archive.OpenReader(e.archivePath)
+	if err != nil {
+		return fmt.Errorf("open archive: %w", err)
+	}
+	defer r.Close()
+
+	var imgIdx, volIdx int
+
+	for {
+		hdr, err := r.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("read archive entry: %w", err)
+		}
+
+		name := filepath.ToSlash(hdr.Name)
+		switch {
+		case name == "manifest.json":
+			data, readErr := io.ReadAll(r)
+			if readErr != nil {
+				return fmt.Errorf("read manifest: %w", readErr)
+			}
+			if jsonErr := json.Unmarshal(data, &e.manifest); jsonErr != nil {
+				return fmt.Errorf("parse manifest: %w", jsonErr)
+			}
+
+		case strings.HasPrefix(name, "configs/"):
+			if err := archive.WriteEntry(hdr, r, workSub); err != nil {
+				e.emit("Warning: config extraction failed: %s", err)
+			}
+
+		case strings.HasPrefix(name, "contexts/"):
+			if err := archive.WriteEntry(hdr, r, workSub); err != nil {
+				e.emit("Warning: context extraction failed: %s", err)
+			}
+
+		case strings.HasPrefix(name, "compose/"):
+			if err := archive.WriteEntry(hdr, r, workSub); err != nil {
+				e.emit("Warning: compose extraction failed: %s", err)
+			}
+
+		case strings.HasPrefix(name, "images/") && strings.HasSuffix(name, ".tar"):
+			imgIdx++
+			imgFile, tmpErr := e.writeTempFile(workSub, "docker-image-*.tar", hdr, r)
+			if tmpErr != nil {
+				e.emit("Warning: could not extract image: %s", tmpErr)
+				continue
+			}
+			tag := e.imageTagFromPath(name)
+			if imgCount > 0 {
+				e.emit("Loading image %d/%d: %s", imgIdx, imgCount, tag)
+			} else {
+				e.emit("Loading image %s", tag)
+			}
+			if loadErr := exec.Command("docker", "load", "-i", imgFile).Run(); loadErr != nil {
+				e.emit("Warning: could not load image %s: %s", tag, loadErr)
+			}
+			os.Remove(imgFile)
+
+		case strings.HasPrefix(name, "volumes/") && strings.HasSuffix(name, ".tar.gz"):
+			volIdx++
+			volName := e.volumeNameFromPath(name)
+			if volName == "" {
+				continue
+			}
+			volFile, tmpErr := e.writeTempFile(workSub, "docker-vol-*.tar.gz", hdr, r)
+			if tmpErr != nil {
+				e.emit("Warning: could not extract volume data: %s", tmpErr)
+				continue
+			}
+			if volCount > 0 {
+				e.emit("Restoring volume %s (%d/%d)", volName, volIdx, volCount)
+			} else {
+				e.emit("Restoring volume %s", volName)
+			}
+			if _, volErr := exec.Command("docker", "volume", "create", volName).Output(); volErr != nil {
+				e.emit("Warning: could not create volume %s: %s", volName, volErr)
+				os.Remove(volFile)
+				continue
+			}
+			script := fmt.Sprintf(
+				"docker run --rm -v %s:/volume -v %s:/backup alpine tar xzf /backup/%s -C /volume",
+				volName, filepath.Dir(volFile), filepath.Base(volFile),
+			)
+			if restErr := exec.Command("bash", "-c", script).Run(); restErr != nil {
+				e.emit("Warning: could not restore volume %s data: %s", volName, restErr)
+			}
+			os.Remove(volFile)
+
+		case strings.HasPrefix(name, "volumes/") && strings.HasSuffix(name, ".json"):
+			// Volume metadata — not needed for restore, skip
+
+		case strings.HasPrefix(name, "containers/"):
+			// Container metadata — skip during restore
+		}
+	}
+	return nil
+}
+
+func (e *dockerRestoreEngine) writeTempFile(dir, pattern string, hdr *tar.Header, r io.Reader) (string, error) {
+	f, err := os.CreateTemp(dir, pattern)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	if _, err := io.Copy(f, r); err != nil {
+		os.Remove(f.Name())
+		return "", err
+	}
+	return f.Name(), nil
+}
+
+func (e *dockerRestoreEngine) imageTagFromPath(path string) string {
+	name := filepath.Base(path)
+	name = strings.TrimSuffix(name, ".tar")
+	name = strings.ReplaceAll(name, "_", "/")
+	if idx := strings.LastIndex(name, "/"); idx > 0 && idx < len(name)-1 {
+		tag := name[idx+1:]
+		repo := name[:idx]
+		return repo + ":" + tag
+	}
+	return name
+}
+
+func (e *dockerRestoreEngine) volumeNameFromPath(path string) string {
+	name := filepath.Base(path)
+	name = strings.TrimSuffix(name, ".tar.gz")
+	return name
+}
+
+func (e *dockerRestoreEngine) loadManifest() error {
+	r, err := archive.OpenReader(e.archivePath)
+	if err != nil {
+		return fmt.Errorf("open archive: %w", err)
+	}
+	defer r.Close()
+	for {
+		hdr, err := r.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("read entry: %w", err)
+		}
+		if filepath.ToSlash(hdr.Name) == "manifest.json" {
+			data, readErr := io.ReadAll(r)
+			if readErr != nil {
+				return fmt.Errorf("read manifest: %w", readErr)
+			}
+			return json.Unmarshal(data, &e.manifest)
+		}
+	}
+	return fmt.Errorf("manifest.json not found in archive")
 }
 
 func (e *dockerRestoreEngine) dockerAvailable() bool {
@@ -163,7 +314,7 @@ func (e *dockerRestoreEngine) installDocker() error {
 		"sudo install -m 0755 -d /etc/apt/keyrings",
 		"curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg",
 		"sudo chmod a+r /etc/apt/keyrings/docker.gpg",
-		`echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null`,
+		`echo "deb [arch=$(dpkg --arch) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo \"$VERSION_CODENAME\") stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null`,
 		"sudo apt-get update -qq",
 		"sudo apt-get install -y -qq docker-ce docker-ce-cli containerd.io docker-compose-plugin",
 		"sudo systemctl enable docker || true",
@@ -185,21 +336,17 @@ func min(a, b int) int {
 	return b
 }
 
-func (e *dockerRestoreEngine) restoreConfigs() error {
-	configsDir := filepath.Join(e.tmpDir, "configs")
-	info, err := os.Stat(configsDir)
+func (e *dockerRestoreEngine) restoreConfigs(dir string) {
+	info, err := os.Stat(dir)
 	if err != nil || !info.IsDir() {
-		return nil
+		return
 	}
 	restarted := false
-	return filepath.Walk(configsDir, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
+	filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
 			return err
 		}
-		if info.IsDir() {
-			return nil
-		}
-		rel, _ := filepath.Rel(configsDir, path)
+		rel, _ := filepath.Rel(dir, path)
 		if rel == "" {
 			return nil
 		}
@@ -211,9 +358,10 @@ func (e *dockerRestoreEngine) restoreConfigs() error {
 		os.MkdirAll(filepath.Dir(dst), 0755)
 		data, _ := os.ReadFile(path)
 		if err := os.WriteFile(dst, data, 0644); err != nil {
-			return fmt.Errorf("write %s: %w", dst, err)
+			e.emit("Warning: write config %s: %s", dst, err)
+			return nil
 		}
-		e.emit("  Restored config: %s", dst)
+		e.emit("Restored config: %s", dst)
 		if strings.Contains(rel, "daemon.json") && strings.HasPrefix(dst, "/etc/docker/") && !restarted {
 			exec.Command("bash", "-c", "sudo systemctl restart docker || true").Run()
 			restarted = true
@@ -222,115 +370,57 @@ func (e *dockerRestoreEngine) restoreConfigs() error {
 	})
 }
 
-func (e *dockerRestoreEngine) restoreContexts() error {
-	src := filepath.Join(e.tmpDir, "contexts")
-	info, err := os.Stat(src)
+func (e *dockerRestoreEngine) restoreContexts(dir string) {
+	info, err := os.Stat(dir)
 	if err != nil || !info.IsDir() {
-		return nil
+		return
 	}
 	dst := filepath.Join(e.home, ".docker", "contexts")
 	os.RemoveAll(dst)
 	os.MkdirAll(filepath.Dir(dst), 0700)
-	return exec.Command("cp", "-r", src+"/.", dst).Run()
+	exec.Command("cp", "-r", dir+"/.", dst).Run()
 }
 
-func (e *dockerRestoreEngine) restoreNetworks() error {
+func (e *dockerRestoreEngine) restoreNetworks() {
 	for _, net := range e.manifest.Networks {
 		if net.Name == "bridge" || net.Name == "host" || net.Name == "none" {
 			continue
 		}
 		if err := exec.Command("docker", "network", "create", "--driver", net.Driver, net.Name).Run(); err != nil {
-			e.emit("  Skipping network %s: %s", net.Name, err)
+			e.emit("Skipping network %s: %s", net.Name, err)
 		} else {
-			e.emit("  Created network: %s", net.Name)
+			e.emit("Created network: %s", net.Name)
 		}
 	}
-	return nil
 }
 
-func (e *dockerRestoreEngine) restoreVolumes() error {
-	volumesDir := filepath.Join(e.tmpDir, "volumes")
-	volInfo, err := os.Stat(volumesDir)
-	hasVolumeData := err == nil && volInfo.IsDir()
-
-	for _, vol := range e.manifest.Volumes {
-		if err := exec.Command("docker", "volume", "create", vol).Run(); err != nil {
-			e.emit("  Warning: could not create volume %s: %s", vol, err)
-			continue
-		}
-		e.emit("  Created volume: %s", vol)
-
-		if hasVolumeData {
-			archivePath := filepath.Join(volumesDir, vol+".tar.gz")
-			if _, err := os.Stat(archivePath); err == nil {
-				script := fmt.Sprintf(
-					"docker run --rm -v %s:/volume -v %s:/backup alpine tar xzf /backup/%s.tar.gz -C /volume",
-					vol, volumesDir, vol,
-				)
-				exec.Command("bash", "-c", script).Run()
-				e.emit("  Restored data to volume: %s", vol)
-			}
-		}
-	}
-	return nil
-}
-
-func (e *dockerRestoreEngine) restoreImages() error {
-	imagesDir := filepath.Join(e.tmpDir, "images")
-	info, err := os.Stat(imagesDir)
+func (e *dockerRestoreEngine) restoreCompose(dir string) {
+	info, err := os.Stat(dir)
 	if err != nil || !info.IsDir() {
-		for _, img := range e.manifest.Images {
-			e.emit("  Manual: docker pull %s:%s", img.Repository, img.Tag)
-		}
-		return nil
+		return
 	}
-
-	for _, img := range e.manifest.Images {
-		imageFile := fmt.Sprintf("%s_%s.tar", sanitizeName(img.Repository), sanitizeName(img.Tag))
-		imagePath := filepath.Join(imagesDir, imageFile)
-		if _, err := os.Stat(imagePath); err != nil {
-			e.emit("  Image file not found for %s:%s, need manual pull", img.Repository, img.Tag)
-			continue
-		}
-		if err := exec.Command("docker", "load", "-i", imagePath).Run(); err != nil {
-			e.emit("  Warning: could not load image %s:%s: %s", img.Repository, img.Tag, err)
-			continue
-		}
-		e.emit("  Loaded image: %s:%s", img.Repository, img.Tag)
-	}
-	return nil
-}
-
-func (e *dockerRestoreEngine) restoreCompose() error {
-	composeDir := filepath.Join(e.tmpDir, "compose")
-	info, err := os.Stat(composeDir)
-	if err != nil || !info.IsDir() {
-		return nil
-	}
-	entries, err := os.ReadDir(composeDir)
+	entries, err := os.ReadDir(dir)
 	if err != nil {
-		return err
+		return
 	}
 	for _, entry := range entries {
 		if !entry.IsDir() {
 			continue
 		}
-		srcDir := filepath.Join(composeDir, entry.Name())
+		srcDir := filepath.Join(dir, entry.Name())
 		projectDir := filepath.Join(e.home, "Projects", entry.Name())
 		os.MkdirAll(projectDir, 0755)
 		exec.Command("cp", "-r", srcDir+"/.", projectDir+"/").Run()
-		e.emit("  Restored compose project: %s", entry.Name())
-
+		e.emit("Restored compose project: %s", entry.Name())
 		for i := range e.manifest.Compose {
 			if e.manifest.Compose[i].Name == entry.Name() {
 				e.manifest.Compose[i].File = filepath.Join(projectDir, filepath.Base(e.manifest.Compose[i].File))
 			}
 		}
 	}
-	return nil
 }
 
-func (e *dockerRestoreEngine) composeUp() error {
+func (e *dockerRestoreEngine) composeUp() {
 	for _, p := range e.manifest.Compose {
 		if p.File == "" {
 			continue
@@ -339,14 +429,13 @@ func (e *dockerRestoreEngine) composeUp() error {
 			continue
 		}
 		dir := filepath.Dir(p.File)
-		e.emit("  Starting compose project: %s", p.Name)
+		e.emit("Starting compose project: %s", p.Name)
 		if err := exec.Command("docker", "compose", "-f", dir, "up", "-d").Run(); err != nil {
-			e.emit("  Warning: compose up for %s failed: %s", p.Name, err)
+			e.emit("Warning: compose up for %s failed: %s", p.Name, err)
 		} else {
-			e.emit("  Compose project %s is running", p.Name)
+			e.emit("Compose project %s is running", p.Name)
 		}
 	}
-	return nil
 }
 
 func (e *dockerRestoreEngine) validate() *dockerValidationReport {
@@ -456,7 +545,7 @@ func (e *dockerRestoreEngine) emitReport(r *dockerValidationReport) {
 }
 
 func (e *dockerRestoreEngine) emit(format string, args ...any) {
-	e.ctx.Runtime.Progress.DetailLine(format, args...)
+	e.restoreCtx.Runtime.Progress.DetailLine(format, args...)
 }
 
 type dockerValidationReport struct {

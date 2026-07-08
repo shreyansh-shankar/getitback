@@ -99,8 +99,8 @@ func (m *ChromeModule) Backup(ctx context.Context, opts module.BackupOptions) (*
 }
 
 func (m *ChromeModule) Restore(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) error {
-	home, _ := os.UserHomeDir()
-	tmpDir, err := os.MkdirTemp("", "getitback-restore-chrome-*")
+	home := restoreutil.HomeDir()
+	tmpDir, err := os.MkdirTemp(opts.WorkDir, "getitback-restore-chrome-*")
 	if err != nil {
 		return err
 	}
@@ -160,17 +160,31 @@ func (m *ChromeModule) Validate(ctx context.Context, snap module.Snapshot) (*mod
 	home := restoreutil.HomeDir()
 	chromeDir := filepath.Join(home, ".config", "google-chrome")
 
-	if restoreutil.DirExists(chromeDir) {
-		v.Recovered("Chrome config directory")
+	if !restoreutil.DirExists(chromeDir) {
+		v.Error("Chrome config directory not found")
+		v.Confidence(85)
+		return v.Result(), nil
+	}
+	v.Recovered("Chrome config directory")
+
+	// Detect actual Chrome profiles
+	prof := browserutil.DetectChromeProfiles("~/.config/google-chrome")
+	if !prof.Available || prof.Count == 0 {
+		v.Warn("No Chrome profiles detected")
+		v.Confidence(85)
+		return v.Result(), nil
+	}
+
+	for _, p := range prof.Profiles {
+		profileName := filepath.Base(p.Path)
+		v.Recovered("profile: " + profileName)
 		for _, name := range []string{"Bookmarks", "Preferences", "History", "Cookies", "Login Data"} {
-			if restoreutil.FileExists(filepath.Join(chromeDir, "Default", name)) {
-				v.Recovered(name)
+			if restoreutil.FileExists(filepath.Join(p.Path, name)) {
+				v.Recovered(name + " (" + profileName + ")")
 			} else {
-				v.Warn("missing %s in Default profile", name)
+				v.Warn("missing %s in %s", name, profileName)
 			}
 		}
-	} else {
-		v.Error("Chrome config directory not found")
 	}
 
 	v.Confidence(85)

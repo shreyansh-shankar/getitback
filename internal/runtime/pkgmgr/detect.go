@@ -7,10 +7,11 @@ import (
 )
 
 func Detect() PackageManager {
+	execEng := executor.NewExecutor(executor.Options{})
 	if _, err := exec.LookPath("apt-get"); err == nil {
-		return NewApt(executor.Executor{})
+		return NewApt(execEng)
 	}
-	return NewApt(executor.Executor{})
+	return NewApt(execEng)
 }
 
 func withSudo(args []string) []string {

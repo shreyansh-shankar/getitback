@@ -130,7 +130,7 @@ func (m *ShellModule) Backup(ctx context.Context, opts module.BackupOptions) (*m
 func (m *ShellModule) Restore(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) error {
 	home := restoreutil.HomeDir()
 
-	tmpDir, err := os.MkdirTemp("", "getitback-restore-shell-*")
+	tmpDir, err := os.MkdirTemp(opts.WorkDir, "getitback-restore-shell-*")
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
 	}

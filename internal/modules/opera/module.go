@@ -100,7 +100,7 @@ func (m *OperaModule) Backup(ctx context.Context, opts module.BackupOptions) (*m
 
 func (m *OperaModule) Restore(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) error {
 	home, _ := os.UserHomeDir()
-	tmpDir, err := os.MkdirTemp("", "getitback-restore-opera-*")
+	tmpDir, err := os.MkdirTemp(opts.WorkDir, "getitback-restore-opera-*")
 	if err != nil {
 		return err
 	}

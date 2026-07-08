@@ -291,7 +291,7 @@ func (m *VirtualizationModule) Backup(ctx context.Context, opts module.BackupOpt
 
 func (m *VirtualizationModule) Restore(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) error {
 	home, _ := os.UserHomeDir()
-	tmpDir, err := os.MkdirTemp("", "getitback-restore-virt-*")
+	tmpDir, err := os.MkdirTemp(opts.WorkDir, "getitback-restore-virt-*")
 	if err != nil {
 		return fmt.Errorf("virtualization: create temp dir: %w", err)
 	}

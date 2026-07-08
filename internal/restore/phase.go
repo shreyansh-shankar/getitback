@@ -18,19 +18,34 @@ type PhaseExecutor struct {
 	results  []ModuleResult
 	rt       *runtime.Runtime
 	dryRun   bool
+	workDir  string
 }
 
-func NewPhaseExecutor(manager *module.Manager, plan *RestorePlan, progress *ProgressReporter, rt *runtime.Runtime, dryRun bool) *PhaseExecutor {
+func NewPhaseExecutor(manager *module.Manager, plan *RestorePlan, progress *ProgressReporter, rt *runtime.Runtime, dryRun bool, workDir string) *PhaseExecutor {
 	return &PhaseExecutor{
 		manager:  manager,
 		plan:     plan,
 		progress: progress,
 		rt:       rt,
 		dryRun:   dryRun,
+		workDir:  workDir,
+	}
+}
+
+func (e *PhaseExecutor) baseOpts() module.RestoreOptions {
+	return module.RestoreOptions{
+		SnapshotsDir:    e.plan.SnapshotsDir,
+		BackupDir:       e.plan.BackupDir,
+		WorkDir:         e.workDir,
+		Runtime:         e.rt,
+		OverwritePolicy: module.OverwritePolicyBackup,
 	}
 }
 
 func (e *PhaseExecutor) ExecuteInstallPhase(ctx context.Context) {
+	if e.dryRun {
+		return
+	}
 	e.progress.Stage("4 / 10", "Installing Required Software")
 
 	var pkgs []string
@@ -66,7 +81,7 @@ func (e *PhaseExecutor) ExecuteInstallPhase(ctx context.Context) {
 	}
 
 	for _, dep := range downloads {
-		e.progress.ModuleSuccess("install", dep.Hint, fmt.Sprintf("URL: %s", dep.URL))
+		e.progress.ModuleSuccess("install", dep.Hint, "")
 	}
 
 	for _, name := range e.plan.Selected {
@@ -79,11 +94,7 @@ func (e *PhaseExecutor) ExecuteInstallPhase(ctx context.Context) {
 			continue
 		}
 		e.progress.InfoLine("Setting up %s...", name)
-		opts := module.RestoreOptions{
-			SnapshotsDir: e.plan.SnapshotsDir,
-			BackupDir:    e.plan.BackupDir,
-			Runtime:      e.rt,
-		}
+		opts := e.baseOpts()
 		if err := inst.Install(ctx, opts); err != nil {
 			e.progress.ModuleFailure("install", name, err)
 			e.results = append(e.results, ModuleResult{Module: name, Phase: "install", Status: "failed", Error: err.Error()})
@@ -95,6 +106,9 @@ func (e *PhaseExecutor) ExecuteInstallPhase(ctx context.Context) {
 }
 
 func (e *PhaseExecutor) ExecuteRestorePhase(ctx context.Context) {
+	if e.dryRun {
+		return
+	}
 	e.progress.Stage("5 / 10", "Restoring Data")
 
 	for _, name := range e.plan.Selected {
@@ -119,11 +133,7 @@ func (e *PhaseExecutor) ExecuteRestorePhase(ctx context.Context) {
 		}
 
 		e.progress.DetailLine("  %s...", name)
-		opts := module.RestoreOptions{
-			SnapshotsDir: e.plan.SnapshotsDir,
-			BackupDir:    e.plan.BackupDir,
-			Runtime:      e.rt,
-		}
+		opts := e.baseOpts()
 
 		if p, ok := mod.(actions.Provider); ok {
 			e.executeWithActions(ctx, p, name, *snap, opts)
@@ -221,6 +231,9 @@ func metricsDetails(metrics []actions.ActionMetrics) []string {
 }
 
 func (e *PhaseExecutor) ExecuteConfigurePhase(ctx context.Context) {
+	if e.dryRun {
+		return
+	}
 	e.progress.Stage("6 / 10", "Post-Restore Configuration")
 
 	for _, name := range e.plan.Selected {
@@ -233,11 +246,7 @@ func (e *PhaseExecutor) ExecuteConfigurePhase(ctx context.Context) {
 			continue
 		}
 
-		opts := module.RestoreOptions{
-			SnapshotsDir: e.plan.SnapshotsDir,
-			BackupDir:    e.plan.BackupDir,
-			Runtime:      e.rt,
-		}
+		opts := e.baseOpts()
 		if err := conf.Configure(ctx, opts); err != nil {
 			e.progress.ModuleFailure("configure", name, err)
 			e.results = append(e.results, ModuleResult{Module: name, Phase: "configure", Status: "failed", Error: err.Error()})
@@ -249,6 +258,9 @@ func (e *PhaseExecutor) ExecuteConfigurePhase(ctx context.Context) {
 }
 
 func (e *PhaseExecutor) ExecuteValidatePhase(ctx context.Context) {
+	if e.dryRun {
+		return
+	}
 	e.progress.Stage("8 / 10", "Validation")
 
 	for _, name := range e.plan.Selected {
@@ -314,14 +326,17 @@ var moduleServices = map[string]string{
 }
 
 func (e *PhaseExecutor) ExecuteServicePhase(ctx context.Context) {
+	if e.dryRun {
+		return
+	}
 	e.progress.Stage("7 / 10", "Service Startup")
 
 	started := 0
 	failed := 0
+	skipped := 0
 	for _, name := range e.plan.Selected {
 		svc, ok := moduleServices[name]
 		if !ok {
-			// Check if the selected module name matches any service key
 			for key, service := range moduleServices {
 				if strings.Contains(name, key) {
 					svc = service
@@ -333,18 +348,32 @@ func (e *PhaseExecutor) ExecuteServicePhase(ctx context.Context) {
 		if !ok {
 			continue
 		}
+
+		// Check if service exists (handles missing systemctl gracefully)
+		if !e.rt.Service.Exists(svc) {
+			e.progress.ModuleSkip("service", svc, "service unit not found")
+			skipped++
+			continue
+		}
+
+		// Enable the service so it starts on boot
+		if err := e.rt.Service.Enable(svc); err != nil {
+			e.progress.ModuleWarning("service", svc, fmt.Sprintf("enable failed: %v", err))
+		}
+
+		// Start the service
 		if err := e.rt.Service.Start(svc); err != nil {
-			e.progress.ModuleFailure("service", svc, err)
+			e.progress.ModuleFailure("service", svc, fmt.Errorf("start failed: %w", err))
 			e.results = append(e.results, ModuleResult{Module: svc, Phase: "service", Status: "failed", Error: err.Error()})
 			failed++
 		} else {
-			e.progress.ModuleSuccess("service", svc, "started")
+			e.progress.ModuleSuccess("service", svc, "started and enabled")
 			e.results = append(e.results, ModuleResult{Module: svc, Phase: "service", Status: "success"})
 			started++
 		}
 	}
 
-	if started == 0 && failed == 0 {
+	if started == 0 && failed == 0 && skipped == 0 {
 		e.progress.InfoLine("No managed services to start.")
 	}
 }

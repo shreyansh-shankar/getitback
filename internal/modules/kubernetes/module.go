@@ -208,7 +208,7 @@ func (m *KubernetesModule) Restore(ctx context.Context, snap module.Snapshot, op
 		home = rt.OS.HomeDir
 	}
 
-	tmpDir, err := os.MkdirTemp("", "getitback-restore-k8s-*")
+	tmpDir, err := os.MkdirTemp(opts.WorkDir, "getitback-restore-k8s-*")
 	if err != nil {
 		return fmt.Errorf("kubernetes: create temp dir: %w", err)
 	}

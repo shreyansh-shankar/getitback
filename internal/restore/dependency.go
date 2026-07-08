@@ -27,6 +27,10 @@ func (r *DependencyResolver) Resolve(ctx context.Context) ([]string, []module.De
 	manualSteps := make([]string, 0)
 	inProgress := make(map[string]bool)
 
+	// Deduplication sets
+	seenPkgs := make(map[string]bool)
+	seenDeps := make(map[string]bool)
+
 	var resolve func(name string) error
 	resolve = func(name string) error {
 		if visited[name] {
@@ -48,6 +52,29 @@ func (r *DependencyResolver) Resolve(ctx context.Context) ([]string, []module.De
 		if ok {
 			deps := dp.Dependencies(ctx)
 			for _, dep := range deps {
+				// Deduplicate system packages
+				if dep.Type == module.DepSystemPkg {
+					if seenPkgs[dep.Package] {
+						continue
+					}
+					seenPkgs[dep.Package] = true
+				}
+				// Deduplicate downloads by URL
+				if dep.Type == module.DepDownload {
+					key := dep.URL + dep.Hint
+					if seenDeps[key] {
+						continue
+					}
+					seenDeps[key] = true
+				}
+				// Deduplicate manual steps by message
+				if dep.Type == module.DepManual && seenDeps[dep.Message] {
+					continue
+				}
+				if dep.Type == module.DepManual {
+					seenDeps[dep.Message] = true
+				}
+
 				allDeps = append(allDeps, dep)
 				switch dep.Type {
 				case module.DepModule:

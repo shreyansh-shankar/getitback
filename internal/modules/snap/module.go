@@ -112,7 +112,7 @@ func (m *SnapModule) Backup(ctx context.Context, opts module.BackupOptions) (*mo
 }
 
 func (m *SnapModule) Restore(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) error {
-	tmpDir, err := os.MkdirTemp("", "getitback-restore-snap-*")
+	tmpDir, err := os.MkdirTemp(opts.WorkDir, "getitback-restore-snap-*")
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
 	}

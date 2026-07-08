@@ -240,7 +240,7 @@ func (m *JavaModule) Restore(ctx context.Context, snap module.Snapshot, opts mod
 		home = rt.OS.HomeDir
 	}
 
-	tmpDir, err := os.MkdirTemp("", "getitback-restore-java-*")
+	tmpDir, err := os.MkdirTemp(opts.WorkDir, "getitback-restore-java-*")
 	if err != nil {
 		return fmt.Errorf("java: create temp dir: %w", err)
 	}

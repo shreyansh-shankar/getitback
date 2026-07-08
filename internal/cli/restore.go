@@ -13,6 +13,7 @@ import (
 	"github.com/shreyansh-shankar/getitback/internal/module"
 	"github.com/shreyansh-shankar/getitback/internal/output"
 	"github.com/shreyansh-shankar/getitback/internal/restore"
+	"github.com/shreyansh-shankar/getitback/internal/runtime/executor"
 	"github.com/shreyansh-shankar/getitback/internal/storage"
 	"github.com/spf13/cobra"
 )
@@ -41,6 +42,23 @@ Stages:
 		RunE: func(cmd *cobra.Command, args []string) error {
 			ctx := cmd.Context()
 			w := cmd.OutOrStdout()
+
+			// Require root privileges for restore
+			if !executor.IsRoot() {
+				fmt.Fprintf(w, "\n  %sRestore requires administrator privileges.%s\n\n", output.ColorRed, output.ColorReset)
+				fmt.Fprintf(w, "  Please run:\n\n")
+				fmt.Fprintf(w, "    %ssudo getitback restore%s\n\n", output.ColorBold, output.ColorReset)
+				return fmt.Errorf("restore requires root privileges")
+			}
+
+			// When running under sudo, set HOME to the original user's home so
+			// modules restore data to the correct location.
+			if sudoUser := os.Getenv("SUDO_USER"); sudoUser != "" {
+				origHome := filepath.Join("/home", sudoUser)
+				if info, err := os.Stat(origHome); err == nil && info.IsDir() {
+					os.Setenv("HOME", origHome)
+				}
+			}
 
 			// Determine backup directory
 			var backupDir string
@@ -119,10 +137,33 @@ Stages:
 
 			dryRun, _ := cmd.Flags().GetBool("dry-run")
 
+			// Resolve working directory with fallback chain:
+			// 1. --workdir CLI flag
+			// 2. GETITBACK_WORKDIR env var
+			// 3. $HOME/.cache/getitback
+			// 4. /tmp (last resort)
+			workDir, _ := cmd.Flags().GetString("workdir")
+			if workDir == "" {
+				workDir = os.Getenv("GETITBACK_WORKDIR")
+			}
+			if workDir == "" {
+				home := os.Getenv("HOME")
+				if home != "" {
+					cacheDir := filepath.Join(home, ".cache", "getitback")
+					if info, err := os.Stat(cacheDir); err == nil && info.IsDir() {
+						workDir = cacheDir
+					}
+				}
+			}
+			if workDir == "" {
+				workDir = "/tmp"
+			}
+
 			engine := restore.NewEngine(manager, backupDir)
 			engine.SetManifest(manifest)
 			engine.SetPlan(plan)
 			engine.SetDryRun(dryRun)
+			engine.SetWorkDir(workDir)
 
 			report, err := engine.Execute(ctx, w)
 			if err != nil {
@@ -154,6 +195,7 @@ Stages:
 	cmd.Flags().Bool("dry-run", false, "Print restore plan without making changes")
 	cmd.Flags().Bool("json", false, "Output recovery report as JSON")
 	cmd.Flags().String("report", "", "Save recovery report to file")
+	cmd.Flags().String("workdir", "", "Working directory for temporary extraction (default: GETITBACK_WORKDIR, or $HOME/.cache/getitback, or /tmp)")
 	return cmd
 }
 

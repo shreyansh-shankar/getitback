@@ -116,8 +116,8 @@ func (m *FirefoxModule) Backup(ctx context.Context, opts module.BackupOptions) (
 }
 
 func (m *FirefoxModule) Restore(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) error {
-	home, _ := os.UserHomeDir()
-	tmpDir, err := os.MkdirTemp("", "getitback-restore-firefox-*")
+	home := restoreutil.HomeDir()
+	tmpDir, err := os.MkdirTemp(opts.WorkDir, "getitback-restore-firefox-*")
 	if err != nil {
 		return err
 	}

@@ -94,7 +94,7 @@ func (m *RedisModule) Backup(ctx context.Context, opts module.BackupOptions) (*m
 }
 
 func (m *RedisModule) Restore(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) error {
-	tmpDir, err := os.MkdirTemp("", "getitback-restore-redis-*")
+	tmpDir, err := os.MkdirTemp(opts.WorkDir, "getitback-restore-redis-*")
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
 	}

@@ -177,7 +177,7 @@ func (m *DotfilesModule) Backup(ctx context.Context, opts module.BackupOptions) 
 func (m *DotfilesModule) Restore(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) error {
 	home, _ := os.UserHomeDir()
 
-	tmpDir, err := os.MkdirTemp("", "getitback-restore-dotfiles-*")
+	tmpDir, err := os.MkdirTemp(opts.WorkDir, "getitback-restore-dotfiles-*")
 	if err != nil {
 		return fmt.Errorf("create temp dir: %w", err)
 	}

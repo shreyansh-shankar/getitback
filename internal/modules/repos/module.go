@@ -351,7 +351,7 @@ func (m *ReposModule) Backup(ctx context.Context, opts module.BackupOptions) (*m
 }
 
 func (m *ReposModule) Restore(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) error {
-	tmpDir, err := os.MkdirTemp("", "getitback-restore-repos-*")
+	tmpDir, err := os.MkdirTemp(opts.WorkDir, "getitback-restore-repos-*")
 	if err != nil {
 		return fmt.Errorf("repos: create temp dir: %w", err)
 	}

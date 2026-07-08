@@ -100,7 +100,7 @@ func (m *BraveModule) Backup(ctx context.Context, opts module.BackupOptions) (*m
 
 func (m *BraveModule) Restore(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) error {
 	home, _ := os.UserHomeDir()
-	tmpDir, err := os.MkdirTemp("", "getitback-restore-brave-*")
+	tmpDir, err := os.MkdirTemp(opts.WorkDir, "getitback-restore-brave-*")
 	if err != nil {
 		return err
 	}
