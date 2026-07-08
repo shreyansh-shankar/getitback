@@ -12,6 +12,7 @@ const (
 	IconCross  Icon = "✗"
 	IconWarn   Icon = "⚠"
 	IconInfo   Icon = "ℹ"
+	IconCircle Icon = "○"
 	IconBullet Icon = "•"
 	IconArrow  Icon = "▸"
 	IconBranch Icon = "├"

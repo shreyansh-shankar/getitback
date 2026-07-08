@@ -11,6 +11,9 @@ import (
 
 	"github.com/shreyansh-shankar/getitback/internal/archive"
 	"github.com/shreyansh-shankar/getitback/internal/module"
+	"github.com/shreyansh-shankar/getitback/internal/runtime"
+	"github.com/shreyansh-shankar/getitback/internal/runtime/actions"
+	"github.com/shreyansh-shankar/getitback/internal/runtime/restoreutil"
 )
 
 type AptModule struct{}
@@ -21,28 +24,27 @@ func (m *AptModule) Name() string        { return "apt" }
 func (m *AptModule) Description() string { return "APT package manager (Debian/Ubuntu)" }
 
 func (m *AptModule) Detect() (bool, error) {
-	_, err := exec.LookPath("apt")
-	return err == nil, nil
+	return restoreutil.CommandExists("apt"), nil
 }
 
 func (m *AptModule) Inventory(ctx context.Context) (*module.InventoryResult, error) {
 	result := &module.InventoryResult{Module: m.Name(), Detected: true}
 
-	if ver, err := exec.Command("apt", "--version").Output(); err == nil {
-		result.Version = strings.Fields(string(ver))[0]
+	if ver, err := restoreutil.CheckExecOutput("apt", "--version"); err == nil {
+		result.Version = strings.Fields(ver)[0]
 	}
 
 	meta := make(map[string]any)
 
-	out, err := exec.Command("apt-mark", "showmanual").Output()
+	out, err := restoreutil.CheckExecOutput("apt-mark", "showmanual")
 	if err == nil {
-		packages := strings.Fields(string(out))
+		packages := strings.Fields(out)
 		meta["manualPackages"] = len(packages)
 	} else {
-		out, err := exec.Command("dpkg", "--get-selections").Output()
+		out, err := restoreutil.CheckExecOutput("dpkg", "--get-selections")
 		if err == nil {
 			count := 0
-			for _, line := range strings.Split(string(out), "\n") {
+			for _, line := range strings.Split(out, "\n") {
 				if strings.Contains(line, "install") {
 					count++
 				}
@@ -51,17 +53,15 @@ func (m *AptModule) Inventory(ctx context.Context) (*module.InventoryResult, err
 		}
 	}
 
-	// Held packages
-	if held, err := exec.Command("apt-mark", "showhold").Output(); err == nil {
-		heldPkgs := strings.Fields(string(held))
+	if held, err := restoreutil.CheckExecOutput("apt-mark", "showhold"); err == nil {
+		heldPkgs := strings.Fields(held)
 		if len(heldPkgs) > 0 {
 			meta["heldPackages"] = len(heldPkgs)
 		}
 	}
 
-	// Repositories
 	sources := "/etc/apt/sources.list"
-	if _, err := os.Stat(sources); err == nil {
+	if restoreutil.FileExists(sources) {
 		data, _ := os.ReadFile(sources)
 		lines := strings.Split(string(data), "\n")
 		var repos []string
@@ -84,7 +84,6 @@ func (m *AptModule) Inventory(ctx context.Context) (*module.InventoryResult, err
 		}
 	}
 
-	// Check for sources.d
 	sourcesDir := "/etc/apt/sources.list.d"
 	if entries, err := os.ReadDir(sourcesDir); err == nil {
 		var additionalRepos int
@@ -105,15 +104,15 @@ func (m *AptModule) Inventory(ctx context.Context) (*module.InventoryResult, err
 func (m *AptModule) Backup(ctx context.Context, opts module.BackupOptions) (*module.BackupResult, error) {
 	var packages []string
 
-	out, err := exec.Command("apt-mark", "showmanual").Output()
+	out, err := restoreutil.CheckExecOutput("apt-mark", "showmanual")
 	if err == nil {
-		packages = strings.Fields(string(out))
+		packages = strings.Fields(out)
 	} else {
-		out, err := exec.Command("dpkg", "--get-selections").Output()
+		out, err := restoreutil.CheckExecOutput("dpkg", "--get-selections")
 		if err != nil {
 			return nil, nil
 		}
-		for _, line := range strings.Split(string(out), "\n") {
+		for _, line := range strings.Split(out, "\n") {
 			if strings.Contains(line, "install") {
 				packages = append(packages, strings.Fields(line)[0])
 			}
@@ -142,6 +141,7 @@ func (m *AptModule) Backup(ctx context.Context, opts module.BackupOptions) (*mod
 		Module: m.Name(),
 		Snapshots: []module.Snapshot{{
 			Module: m.Name(), Path: snapshot.Path, Size: snapshot.Size, Checksum: snapshot.Checksum,
+			OriginalSize: snapshot.OriginalSize, FileCount: snapshot.FileCount,
 		}},
 	}, nil
 }
@@ -188,9 +188,9 @@ func (m *AptModule) Doctor(ctx context.Context) (*module.DoctorResult, error) {
 		Module: m.Name(),
 		Status: module.DoctorStatusOK,
 	}
-	out, err := exec.Command("apt", "list", "--upgradable").Output()
+	out, err := restoreutil.CheckExecOutput("apt", "list", "--upgradable")
 	if err == nil {
-		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+		lines := strings.Split(strings.TrimSpace(out), "\n")
 		pending := 0
 		for _, line := range lines {
 			if !strings.HasPrefix(line, "Listing...") && line != "" {
@@ -208,3 +208,65 @@ func (m *AptModule) Doctor(ctx context.Context) (*module.DoctorResult, error) {
 	}
 	return result, nil
 }
+
+func (m *AptModule) Dependencies(ctx context.Context) []module.Dependency {
+	return []module.Dependency{
+		{Type: module.DepSystemPkg, Package: "apt", Hint: "APT package manager"},
+	}
+}
+
+func (m *AptModule) Install(ctx context.Context, opts module.RestoreOptions) error {
+	return nil
+}
+
+func (m *AptModule) Configure(ctx context.Context, opts module.RestoreOptions) error {
+	return nil
+}
+
+func (m *AptModule) Validate(ctx context.Context, snap module.Snapshot) (*module.ValidateResult, error) {
+	v := restoreutil.NewValidation("apt")
+
+	v.Check(restoreutil.CommandExists("dpkg"), "dpkg available")
+	v.Check(restoreutil.CommandExists("apt-get"), "apt-get available")
+
+	if restoreutil.FileExists("/etc/apt/sources.list") {
+		v.Recovered("sources.list")
+	}
+	if restoreutil.DirExists("/etc/apt/sources.list.d") {
+		entries, _ := os.ReadDir("/etc/apt/sources.list.d")
+		var count int
+		for _, e := range entries {
+			if !e.IsDir() && strings.HasSuffix(e.Name(), ".list") {
+				count++
+			}
+		}
+		if count > 0 {
+			v.Recovered(fmt.Sprintf("%d additional source lists", count))
+		}
+	}
+
+	v.Confidence(85)
+	return v.Result(), nil
+}
+
+func (m *AptModule) Actions(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) ([]actions.Action, error) {
+	return []actions.Action{
+		&actions.ExtractArchive{
+			Source:      snap.Path,
+			Destination: "/etc/apt",
+		},
+	}, nil
+}
+
+type restoreUtilAction struct {
+	actions.BaseAction
+	name string
+	desc string
+	fn   func(ctx *runtime.RestoreContext) error
+}
+
+func (a *restoreUtilAction) Name() string        { return a.name }
+func (a *restoreUtilAction) Description() string  { return a.desc }
+func (a *restoreUtilAction) Execute(ctx *runtime.RestoreContext) error { return a.fn(ctx) }
+
+var _ actions.Provider = (*AptModule)(nil)

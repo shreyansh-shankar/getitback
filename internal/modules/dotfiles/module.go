@@ -4,11 +4,15 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/shreyansh-shankar/getitback/internal/archive"
 	"github.com/shreyansh-shankar/getitback/internal/module"
+	"github.com/shreyansh-shankar/getitback/internal/runtime"
+	"github.com/shreyansh-shankar/getitback/internal/runtime/actions"
+	"github.com/shreyansh-shankar/getitback/internal/runtime/restoreutil"
 )
 
 var knownConfig = map[string]bool{
@@ -144,7 +148,6 @@ func (m *DotfilesModule) Backup(ctx context.Context, opts module.BackupOptions) 
 		})
 	}
 
-	// Also backup config dirs
 	for _, dir := range dotConfigDirs {
 		configPath := filepath.Join(home, ".config", dir)
 		if info, err := os.Stat(configPath); err == nil && info.IsDir() {
@@ -166,6 +169,7 @@ func (m *DotfilesModule) Backup(ctx context.Context, opts module.BackupOptions) 
 		Module: m.Name(),
 		Snapshots: []module.Snapshot{{
 			Module: m.Name(), Path: snapshot.Path, Size: snapshot.Size, Checksum: snapshot.Checksum,
+			OriginalSize: snapshot.OriginalSize, FileCount: snapshot.FileCount,
 		}},
 	}, nil
 }
@@ -213,6 +217,70 @@ func (m *DotfilesModule) Doctor(ctx context.Context) (*module.DoctorResult, erro
 	return &module.DoctorResult{
 		Module: m.Name(),
 		Status: module.DoctorStatusOK,
+	}, nil
+}
+
+func (m *DotfilesModule) Dependencies(ctx context.Context) []module.Dependency {
+	return []module.Dependency{
+		{Type: module.DepSystemPkg, Package: "git", Hint: "Git VCS"},
+	}
+}
+
+func (m *DotfilesModule) Install(ctx context.Context, opts module.RestoreOptions) error {
+	rt, _ := opts.Runtime.(*runtime.Runtime)
+	if rt != nil {
+		return rt.Pkg.Install("git")
+	}
+	return exec.Command("sudo", "apt-get", "install", "-y", "-qq", "git").Run()
+}
+
+func (m *DotfilesModule) Configure(ctx context.Context, opts module.RestoreOptions) error {
+	return nil
+}
+
+func (m *DotfilesModule) Validate(ctx context.Context, snap module.Snapshot) (*module.ValidateResult, error) {
+	v := restoreutil.NewValidation("dotfiles")
+
+	home := restoreutil.HomeDir()
+	entries, err := os.ReadDir(home)
+	if err != nil {
+		v.Error("cannot read home directory")
+		return v.Result(), nil
+	}
+
+	var found int
+	for _, entry := range entries {
+		name := entry.Name()
+		if !strings.HasPrefix(name, ".") || entry.IsDir() {
+			continue
+		}
+		if knownTemp[name] {
+			continue
+		}
+		if knownConfig[name] {
+			v.Recovered(name)
+			found++
+		}
+	}
+
+	if found == 0 {
+		v.Warn("no dotfiles found in home directory")
+		v.Missing("dotfiles")
+	}
+
+	v.Confidence(90)
+	return v.Result(), nil
+}
+
+func (m *DotfilesModule) Actions(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) ([]actions.Action, error) {
+	return []actions.Action{
+		&restoreUtilAction{
+			name: "dotfiles_restore",
+			desc: "Restore dotfiles to home directory",
+			fn: func(ctx *runtime.RestoreContext) error {
+				return m.Restore(ctx, snap, opts)
+			},
+		},
 	}, nil
 }
 
@@ -297,3 +365,16 @@ func isSecretLike(name string) bool {
 	}
 	return false
 }
+
+type restoreUtilAction struct {
+	actions.BaseAction
+	name string
+	desc string
+	fn   func(ctx *runtime.RestoreContext) error
+}
+
+func (a *restoreUtilAction) Name() string                       { return a.name }
+func (a *restoreUtilAction) Description() string                 { return a.desc }
+func (a *restoreUtilAction) Execute(ctx *runtime.RestoreContext) error { return a.fn(ctx) }
+
+var _ actions.Provider = (*DotfilesModule)(nil)

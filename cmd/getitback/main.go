@@ -25,7 +25,7 @@ import (
 	"github.com/shreyansh-shankar/getitback/internal/modules/mongodb"
 	"github.com/shreyansh-shankar/getitback/internal/modules/mysql"
 	"github.com/shreyansh-shankar/getitback/internal/modules/neovim"
-	"github.com/shreyansh-shankar/getitback/internal/modules/nodejs"
+	"github.com/shreyansh-shankar/getitback/internal/modules/node"
 	"github.com/shreyansh-shankar/getitback/internal/modules/opera"
 	"github.com/shreyansh-shankar/getitback/internal/modules/postgres"
 	"github.com/shreyansh-shankar/getitback/internal/modules/python"
@@ -54,7 +54,7 @@ func main() {
 	manager.Register(neovim.NewModule())
 	manager.Register(firefox.NewModule())
 	manager.Register(chromium.NewModule())
-	manager.Register(nodejs.NewModule())
+	manager.Register(node.NewModule())
 	manager.Register(golang.NewModule())
 	manager.Register(python.NewModule())
 	manager.Register(rust.NewModule())

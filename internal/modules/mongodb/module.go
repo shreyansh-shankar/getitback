@@ -10,6 +10,9 @@ import (
 
 	"github.com/shreyansh-shankar/getitback/internal/archive"
 	"github.com/shreyansh-shankar/getitback/internal/module"
+	"github.com/shreyansh-shankar/getitback/internal/runtime"
+	"github.com/shreyansh-shankar/getitback/internal/runtime/actions"
+	"github.com/shreyansh-shankar/getitback/internal/runtime/restoreutil"
 )
 
 type MongoDBModule struct{}
@@ -66,6 +69,7 @@ func (m *MongoDBModule) Backup(ctx context.Context, opts module.BackupOptions) (
 		Module: m.Name(),
 		Snapshots: []module.Snapshot{{
 			Module: m.Name(), Path: snapshot.Path, Size: snapshot.Size, Checksum: snapshot.Checksum,
+			OriginalSize: snapshot.OriginalSize, FileCount: snapshot.FileCount,
 		}},
 	}, nil
 }
@@ -124,3 +128,92 @@ func (m *MongoDBModule) Verify(ctx context.Context, snap module.Snapshot) (*modu
 	}
 	return &module.VerifyResult{Module: m.Name(), Snapshot: snap, Valid: true}, nil
 }
+
+func (m *MongoDBModule) Dependencies(ctx context.Context) []module.Dependency {
+	return []module.Dependency{
+		{Type: module.DepSystemPkg, Package: "mongodb-database-tools", Hint: "MongoDB database tools"},
+	}
+}
+
+func (m *MongoDBModule) Install(ctx context.Context, opts module.RestoreOptions) error {
+	rt, _ := opts.Runtime.(*runtime.Runtime)
+	if rt != nil {
+		return rt.Pkg.Install("mongodb-database-tools")
+	}
+	return exec.Command("sudo", "apt-get", "install", "-y", "-qq", "mongodb-database-tools").Run()
+}
+
+func (m *MongoDBModule) Configure(ctx context.Context, opts module.RestoreOptions) error {
+	return nil
+}
+
+func (m *MongoDBModule) Validate(ctx context.Context, snap module.Snapshot) (*module.ValidateResult, error) {
+	v := restoreutil.NewValidation("mongodb")
+	if restoreutil.CommandExists("mongosh") {
+		ver, err := restoreutil.CheckExecOutput("mongosh", "--version")
+		if err == nil {
+			v.Version(strings.TrimSpace(ver))
+		}
+	} else if restoreutil.CommandExists("mongo") {
+		ver, err := restoreutil.CheckExecOutput("mongo", "--version")
+		if err == nil {
+			v.Version(strings.TrimSpace(ver))
+		}
+	}
+	v.Check(restoreutil.CommandExists("mongosh") || restoreutil.CommandExists("mongo"), "MongoDB shell installed")
+	v.Check(restoreutil.CommandExists("mongodump"), "mongodump installed")
+	v.Check(restoreutil.CommandExists("mongorestore"), "mongorestore installed")
+	if restoreutil.CommandExists("mongodump") {
+		v.Recovered("MongoDB database tools")
+	}
+	v.Confidence(80)
+	return v.Result(), nil
+}
+
+func (m *MongoDBModule) Actions(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) ([]actions.Action, error) {
+	tmpDir := filepath.Join(os.TempDir(), "getitback-restore-mongodb")
+	return []actions.Action{
+		&actions.CreateDirectory{Path: tmpDir, Mode: 0755},
+		&actions.ExtractArchive{Source: snap.Path, Destination: tmpDir},
+		&restoreUtilAction{
+			name: "mongodb_restore",
+			desc: "Restore MongoDB databases from dump",
+			fn: func(ctx *runtime.RestoreContext) error {
+				dumpDir := filepath.Join(tmpDir, "mongodb-dump")
+				if _, err := os.Stat(dumpDir); err != nil {
+					filepath.Walk(tmpDir, func(path string, info os.FileInfo, err error) error {
+						if err != nil {
+							return err
+						}
+						if info.IsDir() && info.Name() == "dump" {
+							dumpDir = path
+						}
+						return nil
+					})
+				}
+				if _, err := os.Stat(dumpDir); err != nil {
+					return fmt.Errorf("no mongodump directory found in snapshot")
+				}
+				bakDir := filepath.Join(tmpDir, "pre-restore.getitback-bak")
+				exec.Command("mongodump", "--out", bakDir).Run()
+				cmd := exec.Command("mongorestore", dumpDir)
+				cmd.Stdout = os.Stdout
+				cmd.Stderr = os.Stderr
+				return cmd.Run()
+			},
+		},
+	}, nil
+}
+
+type restoreUtilAction struct {
+	actions.BaseAction
+	name string
+	desc string
+	fn   func(ctx *runtime.RestoreContext) error
+}
+
+func (a *restoreUtilAction) Name() string        { return a.name }
+func (a *restoreUtilAction) Description() string  { return a.desc }
+func (a *restoreUtilAction) Execute(ctx *runtime.RestoreContext) error { return a.fn(ctx) }
+
+var _ actions.Provider = (*MongoDBModule)(nil)

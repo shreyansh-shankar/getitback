@@ -877,7 +877,7 @@ func sectionHeading(w io.Writer, icon, title string) {
 	fmt.Fprintf(w, "  %s%s%s\n", ColorBold+ColorCyan, strings.Repeat("━", 50), ColorReset)
 }
 
-func dotLeader(label, value string, pad int) string {
+func DotLeader(label, value string, pad int) string {
 	dots := pad - len(label)
 	if dots < 1 {
 		dots = 1
@@ -943,37 +943,37 @@ func renderReportSummary(w io.Writer, s report.ExecutiveSummary) {
 
 	pad := 20
 	if s.OperatingSystem != "" {
-		fmt.Fprintf(w, "\n    %s\n", ColorCyan+dotLeader("Operating System", s.OperatingSystem, pad)+ColorReset)
+		fmt.Fprintf(w, "\n    %s\n", ColorCyan+DotLeader("Operating System", s.OperatingSystem, pad)+ColorReset)
 	}
 	if s.PrimaryShell != "" {
-		fmt.Fprintf(w, "    %s\n", ColorCyan+dotLeader("Primary Shell", s.PrimaryShell, pad)+ColorReset)
+		fmt.Fprintf(w, "    %s\n", ColorCyan+DotLeader("Primary Shell", s.PrimaryShell, pad)+ColorReset)
 	}
 	if s.PrimaryEditor != "" {
-		fmt.Fprintf(w, "    %s\n", ColorCyan+dotLeader("Primary Editor", s.PrimaryEditor, pad)+ColorReset)
+		fmt.Fprintf(w, "    %s\n", ColorCyan+DotLeader("Primary Editor", s.PrimaryEditor, pad)+ColorReset)
 	}
 	if s.PrimaryBrowser != "" {
-		fmt.Fprintf(w, "    %s\n", ColorCyan+dotLeader("Primary Browser", s.PrimaryBrowser, pad)+ColorReset)
+		fmt.Fprintf(w, "    %s\n", ColorCyan+DotLeader("Primary Browser", s.PrimaryBrowser, pad)+ColorReset)
 	}
 	if len(s.Languages) > 0 {
-		fmt.Fprintf(w, "    %s\n", ColorCyan+dotLeader("Languages", commaList(s.Languages), pad)+ColorReset)
+		fmt.Fprintf(w, "    %s\n", ColorCyan+DotLeader("Languages", commaList(s.Languages), pad)+ColorReset)
 	}
 	if len(s.Databases) > 0 {
-		fmt.Fprintf(w, "    %s\n", ColorCyan+dotLeader("Databases", commaList(s.Databases), pad)+ColorReset)
+		fmt.Fprintf(w, "    %s\n", ColorCyan+DotLeader("Databases", commaList(s.Databases), pad)+ColorReset)
 	}
 	if s.Containers > 0 {
-		fmt.Fprintf(w, "    %s\n", ColorCyan+dotLeader("Containers", fmt.Sprintf("%d", s.Containers), pad)+ColorReset)
+		fmt.Fprintf(w, "    %s\n", ColorCyan+DotLeader("Containers", fmt.Sprintf("%d", s.Containers), pad)+ColorReset)
 	}
 	if s.DockerVolumes > 0 {
-		fmt.Fprintf(w, "    %s\n", ColorCyan+dotLeader("Docker Volumes", fmt.Sprintf("%d", s.DockerVolumes), pad)+ColorReset)
+		fmt.Fprintf(w, "    %s\n", ColorCyan+DotLeader("Docker Volumes", fmt.Sprintf("%d", s.DockerVolumes), pad)+ColorReset)
 	}
 	if s.Repositories > 0 {
-		fmt.Fprintf(w, "    %s\n", ColorCyan+dotLeader("Repositories", fmt.Sprintf("%d", s.Repositories), pad)+ColorReset)
+		fmt.Fprintf(w, "    %s\n", ColorCyan+DotLeader("Repositories", fmt.Sprintf("%d", s.Repositories), pad)+ColorReset)
 	}
 	if len(s.CloudProviders) > 0 {
-		fmt.Fprintf(w, "    %s\n", ColorCyan+dotLeader("Cloud Providers", commaList(s.CloudProviders), pad)+ColorReset)
+		fmt.Fprintf(w, "    %s\n", ColorCyan+DotLeader("Cloud Providers", commaList(s.CloudProviders), pad)+ColorReset)
 	}
 	if s.BackupSnapshots > 0 {
-		fmt.Fprintf(w, "    %s\n", ColorCyan+dotLeader("Backup Snapshots", fmt.Sprintf("%d", s.BackupSnapshots), pad)+ColorReset)
+		fmt.Fprintf(w, "    %s\n", ColorCyan+DotLeader("Backup Snapshots", fmt.Sprintf("%d", s.BackupSnapshots), pad)+ColorReset)
 	}
 }
 
@@ -982,35 +982,35 @@ func renderMachineProfile(w io.Writer, m report.MachineProfile) {
 
 	pad := 16
 	if m.Architecture != "" {
-		fmt.Fprintf(w, "\n    %s\n", ColorCyan+dotLeader("Architecture", m.Architecture, pad)+ColorReset)
+		fmt.Fprintf(w, "\n    %s\n", ColorCyan+DotLeader("Architecture", m.Architecture, pad)+ColorReset)
 	}
 	if m.CPU != "" {
-		fmt.Fprintf(w, "    %s\n", ColorCyan+dotLeader("CPU", m.CPU, pad)+ColorReset)
+		fmt.Fprintf(w, "    %s\n", ColorCyan+DotLeader("CPU", m.CPU, pad)+ColorReset)
 	}
 	if m.RAM != "" {
-		fmt.Fprintf(w, "    %s\n", ColorCyan+dotLeader("RAM", m.RAM, pad)+ColorReset)
+		fmt.Fprintf(w, "    %s\n", ColorCyan+DotLeader("RAM", m.RAM, pad)+ColorReset)
 	}
 	if m.Storage != "" {
 		storage := m.Storage
 		if m.StorageUsed != "" && m.StorageAvail != "" {
 			storage = fmt.Sprintf("%s (%s used, %s free)", m.Storage, m.StorageUsed, m.StorageAvail)
 		}
-		fmt.Fprintf(w, "    %s\n", ColorCyan+dotLeader("Storage", storage, pad)+ColorReset)
+		fmt.Fprintf(w, "    %s\n", ColorCyan+DotLeader("Storage", storage, pad)+ColorReset)
 	}
 	if m.Kernel != "" {
-		fmt.Fprintf(w, "    %s\n", ColorCyan+dotLeader("Kernel", m.Kernel, pad)+ColorReset)
+		fmt.Fprintf(w, "    %s\n", ColorCyan+DotLeader("Kernel", m.Kernel, pad)+ColorReset)
 	}
 	if m.Desktop != "" {
-		fmt.Fprintf(w, "    %s\n", ColorCyan+dotLeader("Desktop", m.Desktop, pad)+ColorReset)
+		fmt.Fprintf(w, "    %s\n", ColorCyan+DotLeader("Desktop", m.Desktop, pad)+ColorReset)
 	}
 	if m.Session != "" {
-		fmt.Fprintf(w, "    %s\n", ColorCyan+dotLeader("Session", m.Session, pad)+ColorReset)
+		fmt.Fprintf(w, "    %s\n", ColorCyan+DotLeader("Session", m.Session, pad)+ColorReset)
 	}
 	if m.Timezone != "" {
-		fmt.Fprintf(w, "    %s\n", ColorCyan+dotLeader("Timezone", m.Timezone, pad)+ColorReset)
+		fmt.Fprintf(w, "    %s\n", ColorCyan+DotLeader("Timezone", m.Timezone, pad)+ColorReset)
 	}
 	if m.Locale != "" {
-		fmt.Fprintf(w, "    %s\n", ColorCyan+dotLeader("Locale", m.Locale, pad)+ColorReset)
+		fmt.Fprintf(w, "    %s\n", ColorCyan+DotLeader("Locale", m.Locale, pad)+ColorReset)
 	}
 }
 
@@ -1483,7 +1483,7 @@ func renderStatsLine(w io.Writer, label string, value int) {
 	if value == 0 {
 		return
 	}
-	fmt.Fprintf(w, "    %s\n", ColorCyan+dotLeader(label, fmt.Sprintf("%d", value), 22)+ColorReset)
+	fmt.Fprintf(w, "    %s\n", ColorCyan+DotLeader(label, fmt.Sprintf("%d", value), 22)+ColorReset)
 }
 
 func renderNotDetected(w io.Writer, mods []string) {

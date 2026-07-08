@@ -10,6 +10,9 @@ import (
 
 	"github.com/shreyansh-shankar/getitback/internal/archive"
 	"github.com/shreyansh-shankar/getitback/internal/module"
+	"github.com/shreyansh-shankar/getitback/internal/runtime"
+	"github.com/shreyansh-shankar/getitback/internal/runtime/actions"
+	"github.com/shreyansh-shankar/getitback/internal/runtime/restoreutil"
 )
 
 type PostgresModule struct{}
@@ -82,6 +85,7 @@ func (m *PostgresModule) Backup(ctx context.Context, opts module.BackupOptions) 
 		Module: m.Name(),
 		Snapshots: []module.Snapshot{{
 			Module: m.Name(), Path: snapshot.Path, Size: snapshot.Size, Checksum: snapshot.Checksum,
+			OriginalSize: snapshot.OriginalSize, FileCount: snapshot.FileCount,
 		}},
 	}, nil
 }
@@ -139,3 +143,84 @@ func (m *PostgresModule) Verify(ctx context.Context, snap module.Snapshot) (*mod
 	}
 	return &module.VerifyResult{Module: m.Name(), Snapshot: snap, Valid: true}, nil
 }
+
+func (m *PostgresModule) Dependencies(ctx context.Context) []module.Dependency {
+	return []module.Dependency{
+		{Type: module.DepSystemPkg, Package: "postgresql-client", Hint: "PostgreSQL client tools"},
+	}
+}
+
+func (m *PostgresModule) Install(ctx context.Context, opts module.RestoreOptions) error {
+	rt, _ := opts.Runtime.(*runtime.Runtime)
+	if rt != nil {
+		return rt.Pkg.Install("postgresql-client")
+	}
+	return exec.Command("sudo", "apt-get", "install", "-y", "-qq", "postgresql-client").Run()
+}
+
+func (m *PostgresModule) Configure(ctx context.Context, opts module.RestoreOptions) error {
+	return nil
+}
+
+func (m *PostgresModule) Validate(ctx context.Context, snap module.Snapshot) (*module.ValidateResult, error) {
+	v := restoreutil.NewValidation("postgres")
+	if restoreutil.CommandExists("psql") {
+		ver, err := restoreutil.CheckExecOutput("psql", "--version")
+		if err == nil {
+			v.Version(strings.TrimSpace(ver))
+		}
+	}
+	v.Check(restoreutil.CommandExists("psql"), "psql installed")
+	v.Check(restoreutil.CommandExists("pg_dump"), "pg_dump installed")
+	if restoreutil.CommandExists("psql") {
+		v.Recovered("PostgreSQL client tools")
+	}
+	v.Confidence(80)
+	return v.Result(), nil
+}
+
+func (m *PostgresModule) Actions(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) ([]actions.Action, error) {
+	tmpDir := filepath.Join(os.TempDir(), "getitback-restore-postgres")
+	return []actions.Action{
+		&actions.CreateDirectory{Path: tmpDir, Mode: 0755},
+		&actions.ExtractArchive{Source: snap.Path, Destination: tmpDir},
+		&restoreUtilAction{
+			name: "postgres_restore",
+			desc: "Restore PostgreSQL databases from dump",
+			fn: func(ctx *runtime.RestoreContext) error {
+				var dumpFile string
+				filepath.Walk(tmpDir, func(path string, info os.FileInfo, err error) error {
+					if err != nil {
+						return err
+					}
+					if !info.IsDir() && (strings.HasSuffix(path, ".sql") || strings.HasSuffix(path, ".dump")) {
+						dumpFile = path
+					}
+					return nil
+				})
+				if dumpFile == "" {
+					return fmt.Errorf("no SQL dump found in snapshot")
+				}
+				user := os.Getenv("USER")
+				exec.Command("pg_dumpall", "-U", user, "--no-password", "-f", filepath.Join(tmpDir, "pre-restore.getitback-bak")).Run()
+				cmd := exec.Command("psql", "-U", user, "-f", dumpFile)
+				cmd.Stdout = os.Stdout
+				cmd.Stderr = os.Stderr
+				return cmd.Run()
+			},
+		},
+	}, nil
+}
+
+type restoreUtilAction struct {
+	actions.BaseAction
+	name string
+	desc string
+	fn   func(ctx *runtime.RestoreContext) error
+}
+
+func (a *restoreUtilAction) Name() string        { return a.name }
+func (a *restoreUtilAction) Description() string  { return a.desc }
+func (a *restoreUtilAction) Execute(ctx *runtime.RestoreContext) error { return a.fn(ctx) }
+
+var _ actions.Provider = (*PostgresModule)(nil)

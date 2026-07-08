@@ -2,13 +2,16 @@ package vivaldi
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 
-	"fmt"
 	"github.com/shreyansh-shankar/getitback/internal/archive"
 	"github.com/shreyansh-shankar/getitback/internal/module"
 	"github.com/shreyansh-shankar/getitback/internal/modules/browserutil"
+	"github.com/shreyansh-shankar/getitback/internal/runtime"
+	"github.com/shreyansh-shankar/getitback/internal/runtime/actions"
+	"github.com/shreyansh-shankar/getitback/internal/runtime/restoreutil"
 )
 
 type VivaldiModule struct{}
@@ -88,6 +91,7 @@ func (m *VivaldiModule) Backup(ctx context.Context, opts module.BackupOptions) (
 		Module: m.Name(),
 		Snapshots: []module.Snapshot{{
 			Module: m.Name(), Path: snapshot.Path, Size: snapshot.Size, Checksum: snapshot.Checksum,
+			OriginalSize: snapshot.OriginalSize, FileCount: snapshot.FileCount,
 		}},
 	}, nil
 }
@@ -134,3 +138,80 @@ func (m *VivaldiModule) Doctor(ctx context.Context) (*module.DoctorResult, error
 		Status: module.DoctorStatusOK,
 	}, nil
 }
+
+func (m *VivaldiModule) Dependencies(ctx context.Context) []module.Dependency {
+	return nil
+}
+
+func (m *VivaldiModule) Install(ctx context.Context, opts module.RestoreOptions) error {
+	return nil
+}
+
+func (m *VivaldiModule) Configure(ctx context.Context, opts module.RestoreOptions) error {
+	home := restoreutil.HomeDir()
+	return os.MkdirAll(filepath.Join(home, ".config", "vivaldi"), 0755)
+}
+
+func (m *VivaldiModule) Validate(ctx context.Context, snap module.Snapshot) (*module.ValidateResult, error) {
+	v := restoreutil.NewValidation(m.Name())
+
+	home := restoreutil.HomeDir()
+	vivaldiDir := filepath.Join(home, ".config", "vivaldi")
+
+	if restoreutil.DirExists(vivaldiDir) {
+		v.Recovered("Vivaldi config directory")
+		for _, name := range []string{"Bookmarks", "Preferences", "History", "Cookies", "Login Data"} {
+			if restoreutil.FileExists(filepath.Join(vivaldiDir, "Default", name)) {
+				v.Recovered(name)
+			} else {
+				v.Warn("missing %s in Default profile", name)
+			}
+		}
+	} else {
+		v.Error("Vivaldi config directory not found")
+	}
+
+	v.Confidence(85)
+	return v.Result(), nil
+}
+
+func (m *VivaldiModule) Actions(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) ([]actions.Action, error) {
+	home := restoreutil.HomeDir()
+
+	return []actions.Action{
+		&restoreUtilAction{
+			name: "vivaldi_backup_config",
+			desc: "Backup existing Vivaldi configuration",
+			fn: func(ctx *runtime.RestoreContext) error {
+				vivaldiDir := filepath.Join(home, ".config", "vivaldi")
+				if !restoreutil.DirExists(vivaldiDir) {
+					return nil
+				}
+				return filepath.Walk(vivaldiDir, func(path string, info os.FileInfo, err error) error {
+					if err != nil || info.IsDir() {
+						return err
+					}
+					bakPath := path + ".getitback-bak"
+					if _, err := os.Stat(bakPath); os.IsNotExist(err) {
+						return os.Rename(path, bakPath)
+					}
+					return nil
+				})
+			},
+		},
+		&actions.ExtractArchive{Source: snap.Path, Destination: home},
+	}, nil
+}
+
+type restoreUtilAction struct {
+	actions.BaseAction
+	name string
+	desc string
+	fn   func(ctx *runtime.RestoreContext) error
+}
+
+func (a *restoreUtilAction) Name() string        { return a.name }
+func (a *restoreUtilAction) Description() string  { return a.desc }
+func (a *restoreUtilAction) Execute(ctx *runtime.RestoreContext) error { return a.fn(ctx) }
+
+var _ actions.Provider = (*VivaldiModule)(nil)

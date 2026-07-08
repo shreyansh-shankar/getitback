@@ -11,6 +11,9 @@ import (
 
 	"github.com/shreyansh-shankar/getitback/internal/archive"
 	"github.com/shreyansh-shankar/getitback/internal/module"
+	"github.com/shreyansh-shankar/getitback/internal/runtime"
+	"github.com/shreyansh-shankar/getitback/internal/runtime/actions"
+	"github.com/shreyansh-shankar/getitback/internal/runtime/restoreutil"
 )
 
 type RustModule struct{}
@@ -21,22 +24,18 @@ func (m *RustModule) Name() string        { return "rust" }
 func (m *RustModule) Description() string { return "Rust toolchain and cargo packages" }
 
 func (m *RustModule) Detect() (bool, error) {
-	_, err := exec.LookPath("rustc")
-	return err == nil, nil
+	return restoreutil.CommandExists("rustc"), nil
 }
 
 func (m *RustModule) Inventory(ctx context.Context) (*module.InventoryResult, error) {
-	result := &module.InventoryResult{Module: m.Name(), Detected: true}
-	home, _ := os.UserHomeDir()
+	result := &module.InventoryResult{Module: m.Name(), Detected: true, Metadata: make(map[string]any)}
 
-	if ver, err := exec.Command("rustc", "--version").Output(); err == nil {
-		result.Version = strings.TrimSpace(string(ver))
+	if ver, err := restoreutil.CheckExecOutput("rustc", "--version"); err == nil {
+		result.Version = ver
 	}
 
-	meta := make(map[string]any)
-
-	if ver, err := exec.Command("cargo", "--version").Output(); err == nil {
-		meta["cargo"] = strings.TrimSpace(string(ver))
+	if ver, err := restoreutil.CheckExecOutput("cargo", "--version"); err == nil {
+		result.Metadata["cargo"] = ver
 	}
 
 	if out, err := exec.Command("cargo", "install", "--list").Output(); err == nil {
@@ -52,17 +51,17 @@ func (m *RustModule) Inventory(ctx context.Context) (*module.InventoryResult, er
 				tools = append(tools, parts[0])
 			}
 		}
-		meta["installedTools"] = tools
+		result.Metadata["installedTools"] = tools
 	}
 
-	cargoConfig := filepath.Join(home, ".cargo", "config.toml")
+	cargoConfig := filepath.Join(restoreutil.HomeDir(), ".cargo", "config.toml")
 	if info, err := os.Stat(cargoConfig); err == nil {
 		result.Resources = append(result.Resources, module.Resource{
 			Name: "config.toml", Path: cargoConfig, Size: info.Size(), Modified: info.ModTime(), Type: "config",
 		})
 	}
 
-	cargoCache := filepath.Join(home, ".cargo", "registry", "cache")
+	cargoCache := filepath.Join(restoreutil.HomeDir(), ".cargo", "registry", "cache")
 	if info, err := os.Stat(cargoCache); err == nil && info.IsDir() {
 		var cacheSize int64
 		filepath.Walk(cargoCache, func(path string, info os.FileInfo, err error) error {
@@ -73,19 +72,15 @@ func (m *RustModule) Inventory(ctx context.Context) (*module.InventoryResult, er
 			return nil
 		})
 		if cacheSize > 0 {
-			meta["cargoCache"] = cacheSize
+			result.Metadata["cargoCache"] = cacheSize
 		}
-	}
-
-	if len(meta) > 0 {
-		result.Metadata = meta
 	}
 
 	return result, nil
 }
 
 func (m *RustModule) Backup(ctx context.Context, opts module.BackupOptions) (*module.BackupResult, error) {
-	home, _ := os.UserHomeDir()
+	home := restoreutil.HomeDir()
 	var entries []archive.Entry
 
 	cargoConfig := filepath.Join(home, ".cargo", "config.toml")
@@ -130,20 +125,31 @@ func (m *RustModule) Backup(ctx context.Context, opts module.BackupOptions) (*mo
 		Module: m.Name(),
 		Snapshots: []module.Snapshot{{
 			Module: m.Name(), Path: snapshot.Path, Size: snapshot.Size, Checksum: snapshot.Checksum,
+			OriginalSize: snapshot.OriginalSize, FileCount: snapshot.FileCount,
 		}},
 	}, nil
 }
 
 func (m *RustModule) Restore(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) error {
-	home, _ := os.UserHomeDir()
+	rt, _ := opts.Runtime.(*runtime.Runtime)
+	home := restoreutil.HomeDir()
+	if rt != nil && rt.OS.HomeDir != "" {
+		home = rt.OS.HomeDir
+	}
+
+	cargoDir := filepath.Join(home, ".cargo")
+	os.MkdirAll(cargoDir, 0755)
+
 	tmpDir, err := os.MkdirTemp("", "getitback-restore-rust-*")
 	if err != nil {
 		return err
 	}
 	defer os.RemoveAll(tmpDir)
 
-	if err := archive.Extract(snap.Path, tmpDir); err != nil {
-		return fmt.Errorf("extract: %w", err)
+	if rt != nil {
+		rt.Archive.Extract(snap.Path, tmpDir)
+	} else {
+		archive.Extract(snap.Path, tmpDir)
 	}
 
 	return filepath.Walk(tmpDir, func(path string, info os.FileInfo, err error) error {
@@ -161,13 +167,6 @@ func (m *RustModule) Restore(ctx context.Context, snap module.Snapshot, opts mod
 	})
 }
 
-func (m *RustModule) Doctor(ctx context.Context) (*module.DoctorResult, error) {
-	return &module.DoctorResult{
-		Module: m.Name(),
-		Status: module.DoctorStatusOK,
-	}, nil
-}
-
 func (m *RustModule) Verify(ctx context.Context, snap module.Snapshot) (*module.VerifyResult, error) {
 	info, err := os.Stat(snap.Path)
 	if err != nil {
@@ -178,3 +177,140 @@ func (m *RustModule) Verify(ctx context.Context, snap module.Snapshot) (*module.
 	}
 	return &module.VerifyResult{Module: m.Name(), Snapshot: snap, Valid: true}, nil
 }
+
+func (m *RustModule) Doctor(ctx context.Context) (*module.DoctorResult, error) {
+	result := &module.DoctorResult{Module: m.Name(), Status: module.DoctorStatusOK}
+
+	if !restoreutil.CommandExists("rustc") {
+		result.Issues = append(result.Issues, module.DoctorIssue{
+			Severity: "error", Message: "rustc not found in PATH",
+			Help: "Install Rust: curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh",
+		})
+	}
+	if !restoreutil.CommandExists("cargo") {
+		result.Issues = append(result.Issues, module.DoctorIssue{
+			Severity: "error", Message: "cargo not found in PATH",
+			Help: "Cargo is part of the Rust toolchain; install via rustup",
+		})
+	}
+
+	cargoDir := filepath.Join(restoreutil.HomeDir(), ".cargo")
+	if info, err := os.Stat(cargoDir); err != nil {
+		result.Issues = append(result.Issues, module.DoctorIssue{
+			Severity: "warning", Message: ".cargo directory does not exist",
+			Help: fmt.Sprintf("mkdir -p %s", cargoDir),
+		})
+	} else if info.Mode().Perm()&0077 != 0 {
+		result.Issues = append(result.Issues, module.DoctorIssue{
+			Severity: "warning", Message: ".cargo directory has overly permissive permissions",
+			Help: fmt.Sprintf("chmod 755 %s", cargoDir),
+		})
+	}
+
+	if len(result.Issues) > 0 {
+		result.Status = module.DoctorStatusWarning
+	}
+	return result, nil
+}
+
+func (m *RustModule) Dependencies(ctx context.Context) []module.Dependency {
+	return []module.Dependency{
+		{Type: module.DepCommand, Package: "rustc", Hint: "Rust compiler"},
+		{Type: module.DepCommand, Package: "cargo", Hint: "Cargo package manager"},
+		{Type: module.DepCommand, Package: "rustup", Hint: "Rust toolchain installer", Optional: true},
+	}
+}
+
+func (m *RustModule) Install(ctx context.Context, opts module.RestoreOptions) error {
+	rt, _ := opts.Runtime.(*runtime.Runtime)
+	if rt != nil {
+		return rt.Pkg.Install("rustc")
+	}
+	if restoreutil.CommandExists("rustup") {
+		return exec.Command("rustup", "install", "stable").Run()
+	}
+	return exec.Command("sudo", "apt-get", "install", "-y", "-qq", "rustc", "cargo").Run()
+}
+
+func (m *RustModule) Configure(ctx context.Context, opts module.RestoreOptions) error {
+	home := restoreutil.HomeDir()
+	os.MkdirAll(filepath.Join(home, ".cargo", "bin"), 0755)
+	os.MkdirAll(filepath.Join(home, ".rustup"), 0755)
+	return nil
+}
+
+func (m *RustModule) Validate(ctx context.Context, snap module.Snapshot) (*module.ValidateResult, error) {
+	v := restoreutil.NewValidation("rust")
+
+	ver, err := restoreutil.CheckExecOutput("rustc", "--version")
+	if err == nil {
+		v.Version(ver)
+	}
+	v.Check(restoreutil.CommandExists("rustc"), "Rust compiler installed")
+	v.Check(restoreutil.CommandExists("cargo"), "Cargo package manager installed")
+
+	home := restoreutil.HomeDir()
+	cargoBin := filepath.Join(home, ".cargo", "bin")
+	if restoreutil.DirExists(cargoBin) {
+		entries, _ := os.ReadDir(cargoBin)
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				v.Recovered("tool: " + entry.Name())
+			}
+		}
+	} else {
+		v.Warn("No .cargo/bin directory")
+	}
+
+	if restoreutil.FileExists(filepath.Join(home, ".cargo", "config.toml")) {
+		v.Recovered("cargo config")
+	} else {
+		v.Missing("cargo config.toml")
+	}
+
+	if restoreutil.DirExists(filepath.Join(home, ".cargo", "registry")) {
+		v.Recovered("cargo registry cache")
+	}
+
+	v.Confidence(85)
+	return v.Result(), nil
+}
+
+func (m *RustModule) Actions(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) ([]actions.Action, error) {
+	rt, _ := opts.Runtime.(*runtime.Runtime)
+	home := restoreutil.HomeDir()
+	if rt != nil && rt.OS.HomeDir != "" {
+		home = rt.OS.HomeDir
+	}
+	cargoDir := filepath.Join(home, ".cargo")
+
+	return []actions.Action{
+		&actions.ExtractArchive{Source: snap.Path, Destination: home},
+		&actions.CreateDirectory{Path: cargoDir, Mode: 0755},
+		&restoreUtilAction{
+			name: "cargo_permissions",
+			desc: "Set cargo directory permissions",
+			fn: func(ctx *runtime.RestoreContext) error {
+				os.Chmod(cargoDir, 0755)
+				binDir := filepath.Join(cargoDir, "bin")
+				if restoreutil.DirExists(binDir) {
+					os.Chmod(binDir, 0755)
+				}
+				return nil
+			},
+		},
+	}, nil
+}
+
+type restoreUtilAction struct {
+	actions.BaseAction
+	name string
+	desc string
+	fn   func(ctx *runtime.RestoreContext) error
+}
+
+func (a *restoreUtilAction) Name() string                           { return a.name }
+func (a *restoreUtilAction) Description() string                    { return a.desc }
+func (a *restoreUtilAction) Execute(ctx *runtime.RestoreContext) error { return a.fn(ctx) }
+
+var _ actions.Provider = (*RustModule)(nil)

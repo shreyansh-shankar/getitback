@@ -2,13 +2,16 @@ package chromium
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 
-	"fmt"
 	"github.com/shreyansh-shankar/getitback/internal/archive"
 	"github.com/shreyansh-shankar/getitback/internal/module"
 	"github.com/shreyansh-shankar/getitback/internal/modules/browserutil"
+	"github.com/shreyansh-shankar/getitback/internal/runtime"
+	"github.com/shreyansh-shankar/getitback/internal/runtime/actions"
+	"github.com/shreyansh-shankar/getitback/internal/runtime/restoreutil"
 )
 
 type ChromiumModule struct{}
@@ -92,6 +95,7 @@ func (m *ChromiumModule) Backup(ctx context.Context, opts module.BackupOptions) 
 		Module: m.Name(),
 		Snapshots: []module.Snapshot{{
 			Module: m.Name(), Path: snapshot.Path, Size: snapshot.Size, Checksum: snapshot.Checksum,
+			OriginalSize: snapshot.OriginalSize, FileCount: snapshot.FileCount,
 		}},
 	}, nil
 }
@@ -138,3 +142,80 @@ func (m *ChromiumModule) Doctor(ctx context.Context) (*module.DoctorResult, erro
 		Status: module.DoctorStatusOK,
 	}, nil
 }
+
+func (m *ChromiumModule) Dependencies(ctx context.Context) []module.Dependency {
+	return nil
+}
+
+func (m *ChromiumModule) Install(ctx context.Context, opts module.RestoreOptions) error {
+	return nil
+}
+
+func (m *ChromiumModule) Configure(ctx context.Context, opts module.RestoreOptions) error {
+	home := restoreutil.HomeDir()
+	return os.MkdirAll(filepath.Join(home, ".config", "chromium"), 0755)
+}
+
+func (m *ChromiumModule) Validate(ctx context.Context, snap module.Snapshot) (*module.ValidateResult, error) {
+	v := restoreutil.NewValidation(m.Name())
+
+	home := restoreutil.HomeDir()
+	chromiumDir := filepath.Join(home, ".config", "chromium")
+
+	if restoreutil.DirExists(chromiumDir) {
+		v.Recovered("Chromium config directory")
+		for _, name := range []string{"Bookmarks", "Preferences", "History", "Cookies", "Login Data"} {
+			if restoreutil.FileExists(filepath.Join(chromiumDir, "Default", name)) {
+				v.Recovered(name)
+			} else {
+				v.Warn("missing %s in Default profile", name)
+			}
+		}
+	} else {
+		v.Error("Chromium config directory not found")
+	}
+
+	v.Confidence(85)
+	return v.Result(), nil
+}
+
+func (m *ChromiumModule) Actions(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) ([]actions.Action, error) {
+	home := restoreutil.HomeDir()
+
+	return []actions.Action{
+		&restoreUtilAction{
+			name: "chromium_backup_config",
+			desc: "Backup existing Chromium configuration",
+			fn: func(ctx *runtime.RestoreContext) error {
+				chromiumDir := filepath.Join(home, ".config", "chromium")
+				if !restoreutil.DirExists(chromiumDir) {
+					return nil
+				}
+				return filepath.Walk(chromiumDir, func(path string, info os.FileInfo, err error) error {
+					if err != nil || info.IsDir() {
+						return err
+					}
+					bakPath := path + ".getitback-bak"
+					if _, err := os.Stat(bakPath); os.IsNotExist(err) {
+						return os.Rename(path, bakPath)
+					}
+					return nil
+				})
+			},
+		},
+		&actions.ExtractArchive{Source: snap.Path, Destination: home},
+	}, nil
+}
+
+type restoreUtilAction struct {
+	actions.BaseAction
+	name string
+	desc string
+	fn   func(ctx *runtime.RestoreContext) error
+}
+
+func (a *restoreUtilAction) Name() string        { return a.name }
+func (a *restoreUtilAction) Description() string  { return a.desc }
+func (a *restoreUtilAction) Execute(ctx *runtime.RestoreContext) error { return a.fn(ctx) }
+
+var _ actions.Provider = (*ChromiumModule)(nil)

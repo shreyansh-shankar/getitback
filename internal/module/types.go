@@ -36,20 +36,75 @@ type BackupOptions struct {
 type BackupResult struct {
 	Module    string     `json:"module" yaml:"module"`
 	Snapshots []Snapshot `json:"snapshots" yaml:"snapshots"`
+	Contents  []string   `json:"contents,omitempty" yaml:"contents,omitempty"`
+	Warnings  []string   `json:"warnings,omitempty" yaml:"warnings,omitempty"`
+	Partial   bool       `json:"partial,omitempty" yaml:"partial,omitempty"`
 }
 
 type Snapshot struct {
-	Module    string `json:"module" yaml:"module"`
-	Path      string `json:"path" yaml:"path"`
-	Size      int64  `json:"size" yaml:"size"`
-	Checksum  string `json:"checksum" yaml:"checksum"`
-	Encrypted bool   `json:"encrypted" yaml:"encrypted"`
+	Module     string `json:"module" yaml:"module"`
+	Path       string `json:"path" yaml:"path"`
+	Size       int64  `json:"size" yaml:"size"`
+	Checksum   string `json:"checksum" yaml:"checksum"`
+	Encrypted  bool   `json:"encrypted" yaml:"encrypted"`
+
+	OriginalSize   int64  `json:"originalSize,omitempty" yaml:"originalSize,omitempty"`
+	CompressedSize int64  `json:"compressedSize,omitempty" yaml:"compressedSize,omitempty"`
+	Compression    string `json:"compression,omitempty" yaml:"compression,omitempty"`
+	Duration       string `json:"duration,omitempty" yaml:"duration,omitempty"`
+	Status         string `json:"status,omitempty" yaml:"status,omitempty"`
+	ArchiveFile    string `json:"archiveFile,omitempty" yaml:"archiveFile,omitempty"`
+	RecoveryValue  string `json:"recoveryValue,omitempty" yaml:"recoveryValue,omitempty"`
+	FileCount      int    `json:"fileCount,omitempty" yaml:"fileCount,omitempty"`
+}
+
+type DependencyType string
+
+const (
+	DepModule    DependencyType = "module"      // depends on another registered module
+	DepSystemPkg DependencyType = "system_pkg"  // system package (apt, yum, etc.)
+	DepDownload  DependencyType = "download"    // URL to download
+	DepCommand   DependencyType = "command"     // arbitrary shell command
+	DepManual    DependencyType = "manual"      // user must do something manually
+)
+
+type Dependency struct {
+	Type     DependencyType `json:"type"`
+	Module   string         `json:"module,omitempty"`   // for DepModule
+	Package  string         `json:"package,omitempty"`  // for DepSystemPkg
+	URL      string         `json:"url,omitempty"`      // for DepDownload
+	Command  string         `json:"command,omitempty"`  // for DepCommand
+	Message  string         `json:"message,omitempty"`  // for DepManual
+	Optional bool           `json:"optional,omitempty"`
+	Hint     string         `json:"hint,omitempty"`
+}
+
+type ValidateResult struct {
+	Module     string   `json:"module"`
+	Success    bool     `json:"success"`
+	Version    string   `json:"version,omitempty"`
+	Checks     []string `json:"checks,omitempty"`
+	Warnings   []string `json:"warnings,omitempty"`
+	Errors     []string `json:"errors,omitempty"`
+	ManualSteps []string `json:"manualSteps,omitempty"`
+	Recovered  []string `json:"recovered,omitempty"`
+	Missing    []string `json:"missing,omitempty"`
+	Confidence int      `json:"confidence"` // 0–100
+}
+
+// Runtime is an interface that internal/runtime.Runtime satisfies.
+// It allows modules to access cross-platform primitives without
+// importing the runtime package directly.
+type Runtime interface {
+	// Reserve for future use — type assertion at point of use.
 }
 
 type RestoreOptions struct {
 	SnapshotsDir string
 	Decrypt      bool
 	KeyPath      string
+	BackupDir    string
+	Runtime      Runtime // optional, injected by restore engine
 }
 
 type VerifyResult struct {
@@ -90,19 +145,22 @@ type Coverage struct {
 }
 
 type RecoveryScore struct {
-	Total         int `json:"total" yaml:"total"`
-	Identity      int `json:"identity" yaml:"identity"`
-	Configuration int `json:"configuration" yaml:"configuration"`
-	Development   int `json:"development" yaml:"development"`
-	Editors       int `json:"editors" yaml:"editors"`
-	Browsers      int `json:"browsers" yaml:"browsers"`
-	Packages      int `json:"packages" yaml:"packages"`
-	Databases     int `json:"databases" yaml:"databases"`
-	Containers    int `json:"containers" yaml:"containers"`
-	Cloud         int `json:"cloud" yaml:"cloud"`
-	Infrastructure int `json:"infrastructure" yaml:"infrastructure"`
-	Projects      int `json:"projects" yaml:"projects"`
-	Virtualization int `json:"virtualization" yaml:"virtualization"`
+	Total             int     `json:"total" yaml:"total"`
+	Identity          int     `json:"identity" yaml:"identity"`
+	Configuration     int     `json:"configuration" yaml:"configuration"`
+	Development       int     `json:"development" yaml:"development"`
+	Editors           int     `json:"editors" yaml:"editors"`
+	Browsers          int     `json:"browsers" yaml:"browsers"`
+	Packages          int     `json:"packages" yaml:"packages"`
+	Databases         int     `json:"databases" yaml:"databases"`
+	Containers        int     `json:"containers" yaml:"containers"`
+	Cloud             int     `json:"cloud" yaml:"cloud"`
+	Infrastructure    int     `json:"infrastructure" yaml:"infrastructure"`
+	Projects          int     `json:"projects" yaml:"projects"`
+	Virtualization    int     `json:"virtualization" yaml:"virtualization"`
+	Confidence        float64 `json:"confidence" yaml:"confidence"`
+	AutomationPercent float64 `json:"automationPercent" yaml:"automationPercent"`
+	ManualActions     int     `json:"manualActions" yaml:"manualActions"`
 }
 
 type RecommendationPriority string

@@ -14,6 +14,9 @@ import (
 
 	"github.com/shreyansh-shankar/getitback/internal/archive"
 	"github.com/shreyansh-shankar/getitback/internal/module"
+	irt "github.com/shreyansh-shankar/getitback/internal/runtime"
+	"github.com/shreyansh-shankar/getitback/internal/runtime/actions"
+	"github.com/shreyansh-shankar/getitback/internal/runtime/restoreutil"
 )
 
 type SystemModule struct{}
@@ -144,10 +147,12 @@ func (m *SystemModule) Backup(ctx context.Context, opts module.BackupOptions) (*
 		Module: m.Name(),
 		Snapshots: []module.Snapshot{
 			{
-				Module:   m.Name(),
-				Path:     snapshot.Path,
-				Size:     snapshot.Size,
-				Checksum: snapshot.Checksum,
+				Module:        m.Name(),
+				Path:          snapshot.Path,
+				Size:          snapshot.Size,
+				Checksum:      snapshot.Checksum,
+				OriginalSize:  snapshot.OriginalSize,
+				FileCount:     snapshot.FileCount,
 			},
 		},
 	}, nil
@@ -190,6 +195,59 @@ func (m *SystemModule) Verify(ctx context.Context, snap module.Snapshot) (*modul
 		Valid:    true,
 	}, nil
 }
+
+func (m *SystemModule) Dependencies(ctx context.Context) []module.Dependency {
+	return nil
+}
+
+func (m *SystemModule) Install(ctx context.Context, opts module.RestoreOptions) error {
+	return nil
+}
+
+func (m *SystemModule) Configure(ctx context.Context, opts module.RestoreOptions) error {
+	return nil
+}
+
+func (m *SystemModule) Validate(ctx context.Context, snap module.Snapshot) (*module.ValidateResult, error) {
+	v := restoreutil.NewValidation("system")
+
+	host, err := os.Hostname()
+	v.Check(err == nil && host != "", "hostname: %s", host)
+
+	if tz, err := restoreutil.CheckExecOutput("timedatectl", "show", "-p", "Timezone", "--value"); err == nil {
+		v.Recovered(fmt.Sprintf("timezone: %s", tz))
+	} else if _, err := os.Stat("/etc/timezone"); err == nil {
+		v.Recovered("timezone configured")
+	}
+
+	locale := os.Getenv("LANG")
+	if locale != "" {
+		v.Recovered(fmt.Sprintf("locale: %s", locale))
+	}
+
+	v.Confidence(80)
+	return v.Result(), nil
+}
+
+func (m *SystemModule) Actions(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) ([]actions.Action, error) {
+	home := restoreutil.HomeDir()
+	return []actions.Action{
+		&actions.ExtractArchive{Source: snap.Path, Destination: home},
+	}, nil
+}
+
+type restoreUtilAction struct {
+	actions.BaseAction
+	name string
+	desc string
+	fn   func(ctx *irt.RestoreContext) error
+}
+
+func (a *restoreUtilAction) Name() string        { return a.name }
+func (a *restoreUtilAction) Description() string  { return a.desc }
+func (a *restoreUtilAction) Execute(ctx *irt.RestoreContext) error { return a.fn(ctx) }
+
+var _ actions.Provider = (*SystemModule)(nil)
 
 func readOSRelease() map[string]string {
 	f, err := os.Open("/etc/os-release")

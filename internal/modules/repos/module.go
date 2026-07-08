@@ -2,6 +2,7 @@ package repos
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
@@ -10,7 +11,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/shreyansh-shankar/getitback/internal/archive"
 	"github.com/shreyansh-shankar/getitback/internal/module"
+	"github.com/shreyansh-shankar/getitback/internal/runtime"
+	"github.com/shreyansh-shankar/getitback/internal/runtime/actions"
+	"github.com/shreyansh-shankar/getitback/internal/runtime/restoreutil"
 )
 
 type ReposModule struct{}
@@ -21,8 +26,7 @@ func (m *ReposModule) Name() string        { return "repos" }
 func (m *ReposModule) Description() string { return "Git repository discovery" }
 
 func (m *ReposModule) Detect() (bool, error) {
-	_, err := exec.LookPath("git")
-	return err == nil, nil
+	return restoreutil.CommandExists("git"), nil
 }
 
 type repoInfo struct {
@@ -73,7 +77,6 @@ func (m *ReposModule) Inventory(ctx context.Context) (*module.InventoryResult, e
 		}
 	}
 
-	// Also scan home for dotfile repos
 	gitDir := filepath.Join(home, ".git")
 	if info, err := os.Stat(gitDir); err == nil && info.IsDir() {
 		isBare := false
@@ -224,15 +227,186 @@ func fetchRepoInfo(r *repoInfo) {
 	}
 }
 
+type repoBackupEntry struct {
+	Name       string `json:"name"`
+	Path       string `json:"path"`
+	Remote     string `json:"remote,omitempty"`
+	Provider   string `json:"provider,omitempty"`
+	Branch     string `json:"branch"`
+	DefaultBr  string `json:"defaultBranch,omitempty"`
+	Dirty      bool   `json:"dirty"`
+	Ahead      int    `json:"ahead"`
+	Behind     int    `json:"behind"`
+	HasSubmod  bool   `json:"hasSubmodules"`
+	LFSEnabled bool   `json:"lfsEnabled"`
+	HEADHash   string `json:"headHash"`
+}
+
+type reposBackupManifest struct {
+	Repos []repoBackupEntry `json:"repositories"`
+	Total int               `json:"total"`
+	Dirty int               `json:"dirty"`
+}
+
 func (m *ReposModule) Backup(ctx context.Context, opts module.BackupOptions) (*module.BackupResult, error) {
-	return nil, nil
+	home, _ := os.UserHomeDir()
+	var repos []repoInfo
+
+	for _, dir := range devDirs {
+		searchPath := filepath.Join(home, dir)
+		entries, err := os.ReadDir(searchPath)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			repoPath := filepath.Join(searchPath, entry.Name())
+			gitDir := filepath.Join(repoPath, ".git")
+			if info, err := os.Stat(gitDir); err != nil || !info.IsDir() {
+				continue
+			}
+			repos = append(repos, repoInfo{name: entry.Name(), path: repoPath})
+		}
+	}
+
+	if len(repos) == 0 {
+		return nil, nil
+	}
+
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 10)
+	for i := range repos {
+		wg.Add(1)
+		go func(r *repoInfo) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			fetchRepoInfo(r)
+		}(&repos[i])
+	}
+	wg.Wait()
+
+	var manifest reposBackupManifest
+	for _, r := range repos {
+		headHash := ""
+		if hash, err := exec.Command("git", "-C", r.path, "rev-parse", "HEAD").Output(); err == nil {
+			headHash = strings.TrimSpace(string(hash))
+		}
+
+		manifest.Repos = append(manifest.Repos, repoBackupEntry{
+			Name:       r.name,
+			Path:       r.path,
+			Remote:     r.remote,
+			Provider:   r.provider,
+			Branch:     r.branch,
+			DefaultBr:  r.defaultBr,
+			Dirty:      r.dirty,
+			Ahead:      r.ahead,
+			Behind:     r.behind,
+			HasSubmod:  r.hasSubmod,
+			LFSEnabled: r.lfsEnabled,
+			HEADHash:   headHash,
+		})
+		if r.dirty {
+			manifest.Dirty++
+		}
+	}
+	manifest.Total = len(repos)
+
+	tmpMeta, err := json.MarshalIndent(manifest, "", "  ")
+	if err != nil {
+		return nil, fmt.Errorf("repos: marshal manifest: %w", err)
+	}
+	metaFile := filepath.Join(os.TempDir(), "getitback-repos-manifest.json")
+	if err := os.WriteFile(metaFile, tmpMeta, 0600); err != nil {
+		return nil, fmt.Errorf("repos: write manifest: %w", err)
+	}
+	defer os.Remove(metaFile)
+
+	entries := []archive.Entry{
+		{Source: metaFile, ArchivePath: "manifest.json"},
+	}
+
+	snapshot, err := archive.CreateSnapshot(opts.SnapshotsDir, m.Name(), entries)
+	if err != nil {
+		return nil, err
+	}
+	if snapshot == nil {
+		return nil, nil
+	}
+	contents := []string{fmt.Sprintf("repository manifest (%d repos)", manifest.Total)}
+	if manifest.Dirty > 0 {
+		contents = append(contents, fmt.Sprintf("uncommitted changes (%d)", manifest.Dirty))
+	}
+	return &module.BackupResult{
+		Module:    m.Name(),
+		Snapshots: []module.Snapshot{{
+			Module: m.Name(), Path: snapshot.Path, Size: snapshot.Size, Checksum: snapshot.Checksum,
+			OriginalSize: snapshot.OriginalSize, FileCount: snapshot.FileCount,
+		}},
+		Contents: contents,
+	}, nil
 }
 
 func (m *ReposModule) Restore(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) error {
+	tmpDir, err := os.MkdirTemp("", "getitback-restore-repos-*")
+	if err != nil {
+		return fmt.Errorf("repos: create temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	if err := archive.Extract(snap.Path, tmpDir); err != nil {
+		return fmt.Errorf("repos: extract snapshot: %w", err)
+	}
+
+	var manifestPath string
+	filepath.Walk(tmpDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return err
+		}
+		if filepath.Base(path) == "manifest.json" {
+			manifestPath = path
+		}
+		return nil
+	})
+
+	if manifestPath == "" {
+		return fmt.Errorf("repos: no manifest found in snapshot")
+	}
+
+	data, err := os.ReadFile(manifestPath)
+	if err != nil {
+		return fmt.Errorf("repos: read manifest: %w", err)
+	}
+
+	var manifest reposBackupManifest
+	if err := json.Unmarshal(data, &manifest); err != nil {
+		return fmt.Errorf("repos: parse manifest: %w", err)
+	}
+
+	for _, repo := range manifest.Repos {
+		fmt.Printf("  Repo: %s (%s)\n", repo.Name, repo.Path)
+		fmt.Printf("    Remote: %s\n", repo.Remote)
+		fmt.Printf("    Branch: %s\n", repo.Branch)
+		fmt.Printf("    HEAD: %s\n", repo.HEADHash)
+		if repo.Dirty {
+			fmt.Printf("    WARNING: Repository had uncommitted changes at backup time\n")
+		}
+	}
+
 	return nil
 }
 
 func (m *ReposModule) Verify(ctx context.Context, snap module.Snapshot) (*module.VerifyResult, error) {
+	info, err := os.Stat(snap.Path)
+	if err != nil {
+		return &module.VerifyResult{Module: m.Name(), Snapshot: snap, Valid: false, Errors: []string{err.Error()}}, nil
+	}
+	if info.Size() == 0 {
+		return &module.VerifyResult{Module: m.Name(), Snapshot: snap, Valid: false, Errors: []string{"empty snapshot"}}, nil
+	}
 	return &module.VerifyResult{Module: m.Name(), Snapshot: snap, Valid: true}, nil
 }
 
@@ -296,3 +470,68 @@ func (m *ReposModule) Doctor(ctx context.Context) (*module.DoctorResult, error) 
 	}
 	return result, nil
 }
+
+func (m *ReposModule) Dependencies(ctx context.Context) []module.Dependency {
+	return []module.Dependency{
+		{Type: module.DepSystemPkg, Package: "git", Hint: "Git VCS"},
+	}
+}
+
+func (m *ReposModule) Install(ctx context.Context, opts module.RestoreOptions) error {
+	rt, _ := opts.Runtime.(*runtime.Runtime)
+	if rt != nil {
+		return rt.Pkg.Install("git")
+	}
+	return exec.Command("sudo", "apt-get", "install", "-y", "-qq", "git").Run()
+}
+
+func (m *ReposModule) Configure(ctx context.Context, opts module.RestoreOptions) error {
+	return nil
+}
+
+func (m *ReposModule) Validate(ctx context.Context, snap module.Snapshot) (*module.ValidateResult, error) {
+	v := restoreutil.NewValidation("repos")
+
+	v.Check(restoreutil.CommandExists("git"), "git installed")
+
+	home := restoreutil.HomeDir()
+	for _, dir := range devDirs {
+		searchPath := filepath.Join(home, dir)
+		if !restoreutil.DirExists(searchPath) {
+			continue
+		}
+		entries, _ := os.ReadDir(searchPath)
+		for _, entry := range entries {
+			if !entry.IsDir() {
+				continue
+			}
+			repoPath := filepath.Join(searchPath, entry.Name())
+			if restoreutil.DirExists(filepath.Join(repoPath, ".git")) {
+				v.Recovered(fmt.Sprintf("cloned repo: %s", entry.Name()))
+			}
+		}
+	}
+
+	v.Confidence(85)
+	return v.Result(), nil
+}
+
+func (m *ReposModule) Actions(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) ([]actions.Action, error) {
+	home := restoreutil.HomeDir()
+	return []actions.Action{
+		&actions.ExtractArchive{Source: snap.Path, Destination: home},
+	}, nil
+}
+
+type restoreUtilAction struct {
+	actions.BaseAction
+	name string
+	desc string
+	fn   func(ctx *runtime.RestoreContext) error
+}
+
+func (a *restoreUtilAction) Name() string        { return a.name }
+func (a *restoreUtilAction) Description() string  { return a.desc }
+func (a *restoreUtilAction) Execute(ctx *runtime.RestoreContext) error { return a.fn(ctx) }
+
+var _ actions.Provider = (*ReposModule)(nil)

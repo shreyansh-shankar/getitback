@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 
 	"github.com/shreyansh-shankar/getitback/internal/archive"
 	"github.com/shreyansh-shankar/getitback/internal/module"
+	"github.com/shreyansh-shankar/getitback/internal/runtime"
+	"github.com/shreyansh-shankar/getitback/internal/runtime/actions"
+	"github.com/shreyansh-shankar/getitback/internal/runtime/restoreutil"
 )
 
 type ShellModule struct{}
@@ -30,29 +32,28 @@ func (m *ShellModule) Inventory(ctx context.Context) (*module.InventoryResult, e
 	}
 
 	shell := os.Getenv("SHELL")
-	home, _ := os.UserHomeDir()
+	home := restoreutil.HomeDir()
 	shellName := filepath.Base(shell)
 	meta := map[string]any{
 		"basename": shellName,
 	}
 
-	if ver, err := exec.Command(shell, "--version").Output(); err == nil {
-		firstLine := strings.SplitN(string(ver), "\n", 2)[0]
+	if ver, err := restoreutil.CheckExecOutput(shell, "--version"); err == nil {
+		firstLine := strings.SplitN(ver, "\n", 2)[0]
 		result.Version = firstLine
 	}
 
-	// Framework detection
 	frameworks := detectFrameworks(home, shellName)
 	if len(frameworks) > 0 {
 		meta["frameworks"] = frameworks
 	}
 
-	// Starship detection
-	if _, err := exec.LookPath("starship"); err == nil {
+	if restoreutil.CommandExists("starship") {
 		meta["starship"] = true
-		if _, err := os.Stat(filepath.Join(home, ".config", "starship.toml")); err == nil {
+		sp := filepath.Join(home, ".config", "starship.toml")
+		if restoreutil.FileExists(sp) {
 			result.Resources = append(result.Resources, module.Resource{
-				Name: "starship.toml", Path: filepath.Join(home, ".config", "starship.toml"),
+				Name: "starship.toml", Path: sp,
 				Type: "config",
 			})
 		}
@@ -60,9 +61,7 @@ func (m *ShellModule) Inventory(ctx context.Context) (*module.InventoryResult, e
 
 	result.Metadata = meta
 
-	configFiles := shellConfigFiles(shellName, home)
-
-	for _, file := range configFiles {
+	for _, file := range shellConfigFiles(shellName, home) {
 		if info, err := os.Stat(file); err == nil {
 			result.Resources = append(result.Resources, module.Resource{
 				Name:     filepath.Base(file),
@@ -78,7 +77,7 @@ func (m *ShellModule) Inventory(ctx context.Context) (*module.InventoryResult, e
 }
 
 func (m *ShellModule) Backup(ctx context.Context, opts module.BackupOptions) (*module.BackupResult, error) {
-	home, _ := os.UserHomeDir()
+	home := restoreutil.HomeDir()
 	shell := os.Getenv("SHELL")
 	shellName := filepath.Base(shell)
 	configPaths := shellConfigFiles(shellName, home)
@@ -117,17 +116,19 @@ func (m *ShellModule) Backup(ctx context.Context, opts module.BackupOptions) (*m
 		Module: m.Name(),
 		Snapshots: []module.Snapshot{
 			{
-				Module:   m.Name(),
-				Path:     snapshot.Path,
-				Size:     snapshot.Size,
-				Checksum: snapshot.Checksum,
+				Module:        m.Name(),
+				Path:          snapshot.Path,
+				Size:          snapshot.Size,
+				Checksum:      snapshot.Checksum,
+				OriginalSize:  snapshot.OriginalSize,
+				FileCount:     snapshot.FileCount,
 			},
 		},
 	}, nil
 }
 
 func (m *ShellModule) Restore(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) error {
-	home, _ := os.UserHomeDir()
+	home := restoreutil.HomeDir()
 
 	tmpDir, err := os.MkdirTemp("", "getitback-restore-shell-*")
 	if err != nil {
@@ -167,13 +168,6 @@ func (m *ShellModule) Restore(ctx context.Context, snap module.Snapshot, opts mo
 	})
 }
 
-func (m *ShellModule) Doctor(ctx context.Context) (*module.DoctorResult, error) {
-	return &module.DoctorResult{
-		Module: m.Name(),
-		Status: module.DoctorStatusOK,
-	}, nil
-}
-
 func (m *ShellModule) Verify(ctx context.Context, snap module.Snapshot) (*module.VerifyResult, error) {
 	info, err := os.Stat(snap.Path)
 	if err != nil {
@@ -197,6 +191,100 @@ func (m *ShellModule) Verify(ctx context.Context, snap module.Snapshot) (*module
 		Snapshot: snap,
 		Valid:    true,
 	}, nil
+}
+
+func (m *ShellModule) Doctor(ctx context.Context) (*module.DoctorResult, error) {
+	return &module.DoctorResult{
+		Module: m.Name(),
+		Status: module.DoctorStatusOK,
+	}, nil
+}
+
+func (m *ShellModule) Dependencies(ctx context.Context) []module.Dependency {
+	var deps []module.Dependency
+	for _, shell := range []string{"bash", "zsh", "fish"} {
+		if restoreutil.CommandExists(shell) {
+			deps = append(deps, module.Dependency{
+				Type: module.DepCommand, Command: shell, Optional: true,
+			})
+		}
+	}
+	return deps
+}
+
+func (m *ShellModule) Install(ctx context.Context, opts module.RestoreOptions) error {
+	return nil
+}
+
+func (m *ShellModule) Configure(ctx context.Context, opts module.RestoreOptions) error {
+	configDir := filepath.Join(restoreutil.HomeDir(), ".config")
+	if !restoreutil.DirExists(configDir) {
+		return os.MkdirAll(configDir, 0755)
+	}
+	return nil
+}
+
+func (m *ShellModule) Validate(ctx context.Context, snap module.Snapshot) (*module.ValidateResult, error) {
+	v := restoreutil.NewValidation("shell")
+
+	shell := os.Getenv("SHELL")
+	shellName := filepath.Base(shell)
+
+	if shell != "" {
+		v.Check(true, "Shell detected: %s", shellName)
+		ver, err := restoreutil.CheckExecOutput(shell, "--version")
+		if err == nil {
+			firstLine := strings.SplitN(ver, "\n", 2)[0]
+			v.Version(firstLine)
+		}
+	}
+
+	home := restoreutil.HomeDir()
+	configFiles := shellConfigFiles(shellName, home)
+
+	var recoveredCount, missingCount int
+	for _, cf := range configFiles {
+		if restoreutil.FileExists(cf) {
+			v.Recovered(cf)
+			recoveredCount++
+		} else {
+			v.Missing(cf)
+			missingCount++
+		}
+	}
+
+	total := len(configFiles)
+	if total > 0 {
+		pct := (recoveredCount * 100) / total
+		v.Confidence(pct)
+	} else {
+		v.Confidence(100)
+	}
+
+	return v.Result(), nil
+}
+
+func (m *ShellModule) Actions(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) ([]actions.Action, error) {
+	home := restoreutil.HomeDir()
+	return []actions.Action{
+		&actions.ExtractArchive{Source: snap.Path, Destination: home},
+	}, nil
+}
+
+type restoreUtilAction struct {
+	actions.BaseAction
+	name string
+	desc string
+	fn   func(ctx *runtime.RestoreContext) error
+}
+
+func (a *restoreUtilAction) Name() string        { return a.name }
+func (a *restoreUtilAction) Description() string  { return a.desc }
+func (a *restoreUtilAction) Execute(ctx *runtime.RestoreContext) error {
+	if a.fn != nil {
+		return a.fn(ctx)
+	}
+	return nil
 }
 
 func detectFrameworks(home, shellName string) []string {
@@ -259,3 +347,5 @@ func shellConfigFiles(shell, home string) []string {
 	}
 	return nil
 }
+
+var _ actions.Provider = (*ShellModule)(nil)

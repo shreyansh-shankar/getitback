@@ -2,13 +2,16 @@ package firefox
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 
-	"fmt"
 	"github.com/shreyansh-shankar/getitback/internal/archive"
 	"github.com/shreyansh-shankar/getitback/internal/module"
 	"github.com/shreyansh-shankar/getitback/internal/modules/browserutil"
+	"github.com/shreyansh-shankar/getitback/internal/runtime"
+	"github.com/shreyansh-shankar/getitback/internal/runtime/actions"
+	"github.com/shreyansh-shankar/getitback/internal/runtime/restoreutil"
 )
 
 type FirefoxModule struct{}
@@ -88,7 +91,6 @@ func (m *FirefoxModule) Backup(ctx context.Context, opts module.BackupOptions) (
 		})
 	}
 
-	// Also back up profiles.ini if it exists
 	profilesDir := filepath.Dir(prof.Profiles[0].Path)
 	iniPath := filepath.Join(profilesDir, "profiles.ini")
 	if _, err := os.Stat(iniPath); err == nil {
@@ -108,6 +110,7 @@ func (m *FirefoxModule) Backup(ctx context.Context, opts module.BackupOptions) (
 		Module: m.Name(),
 		Snapshots: []module.Snapshot{{
 			Module: m.Name(), Path: snapshot.Path, Size: snapshot.Size, Checksum: snapshot.Checksum,
+			OriginalSize: snapshot.OriginalSize, FileCount: snapshot.FileCount,
 		}},
 	}, nil
 }
@@ -139,13 +142,6 @@ func (m *FirefoxModule) Restore(ctx context.Context, snap module.Snapshot, opts 
 	})
 }
 
-func (m *FirefoxModule) Doctor(ctx context.Context) (*module.DoctorResult, error) {
-	return &module.DoctorResult{
-		Module: m.Name(),
-		Status: module.DoctorStatusOK,
-	}, nil
-}
-
 func (m *FirefoxModule) Verify(ctx context.Context, snap module.Snapshot) (*module.VerifyResult, error) {
 	info, err := os.Stat(snap.Path)
 	if err != nil {
@@ -156,3 +152,99 @@ func (m *FirefoxModule) Verify(ctx context.Context, snap module.Snapshot) (*modu
 	}
 	return &module.VerifyResult{Module: m.Name(), Snapshot: snap, Valid: true}, nil
 }
+
+func (m *FirefoxModule) Doctor(ctx context.Context) (*module.DoctorResult, error) {
+	return &module.DoctorResult{
+		Module: m.Name(),
+		Status: module.DoctorStatusOK,
+	}, nil
+}
+
+func (m *FirefoxModule) Dependencies(ctx context.Context) []module.Dependency {
+	return nil
+}
+
+func (m *FirefoxModule) Install(ctx context.Context, opts module.RestoreOptions) error {
+	return nil
+}
+
+func (m *FirefoxModule) Configure(ctx context.Context, opts module.RestoreOptions) error {
+	home := restoreutil.HomeDir()
+	return os.MkdirAll(filepath.Join(home, ".mozilla", "firefox"), 0755)
+}
+
+func (m *FirefoxModule) Validate(ctx context.Context, snap module.Snapshot) (*module.ValidateResult, error) {
+	v := restoreutil.NewValidation(m.Name())
+
+	home := restoreutil.HomeDir()
+	firefoxDir := filepath.Join(home, ".mozilla", "firefox")
+
+	if restoreutil.DirExists(firefoxDir) {
+		v.Recovered("Firefox config directory")
+
+		prof := browserutil.DetectFirefoxProfiles()
+		if prof.Available && prof.Count > 0 {
+			for _, p := range prof.Profiles {
+				for _, name := range []string{"places.sqlite", "prefs.js", "bookmarksbackup"} {
+					if restoreutil.FileExists(filepath.Join(p.Path, name)) {
+						v.Recovered(fmt.Sprintf("%s in %s", name, p.Name))
+					} else {
+						v.Warn("missing %s in %s", name, p.Name)
+					}
+				}
+			}
+		}
+
+		if restoreutil.FileExists(filepath.Join(firefoxDir, "profiles.ini")) {
+			v.Recovered("profiles.ini")
+		} else {
+			v.Warn("missing profiles.ini")
+		}
+	} else {
+		v.Error("Firefox config directory not found")
+	}
+
+	v.Confidence(85)
+	return v.Result(), nil
+}
+
+func (m *FirefoxModule) Actions(ctx context.Context, snap module.Snapshot, opts module.RestoreOptions) ([]actions.Action, error) {
+	home := restoreutil.HomeDir()
+
+	return []actions.Action{
+		&restoreUtilAction{
+			name: "firefox_backup_config",
+			desc: "Backup existing Firefox configuration",
+			fn: func(ctx *runtime.RestoreContext) error {
+				firefoxDir := filepath.Join(home, ".mozilla", "firefox")
+				if !restoreutil.DirExists(firefoxDir) {
+					return nil
+				}
+				return filepath.Walk(firefoxDir, func(path string, info os.FileInfo, err error) error {
+					if err != nil || info.IsDir() {
+						return err
+					}
+					bakPath := path + ".getitback-bak"
+					if _, err := os.Stat(bakPath); os.IsNotExist(err) {
+						return os.Rename(path, bakPath)
+					}
+					return nil
+				})
+			},
+		},
+		&actions.ExtractArchive{Source: snap.Path, Destination: home},
+	}, nil
+}
+
+type restoreUtilAction struct {
+	actions.BaseAction
+	name string
+	desc string
+	fn   func(ctx *runtime.RestoreContext) error
+}
+
+func (a *restoreUtilAction) Name() string        { return a.name }
+func (a *restoreUtilAction) Description() string  { return a.desc }
+func (a *restoreUtilAction) Execute(ctx *runtime.RestoreContext) error { return a.fn(ctx) }
+
+var _ actions.Provider = (*FirefoxModule)(nil)
