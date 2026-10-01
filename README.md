@@ -1,7 +1,5 @@
 <div align="center">
-
-<img src="https://raw.githubusercontent.com/shreyansh-shankar/getitback/main/docs/assets/logo.svg" alt="getitback logo" width="120" />
-
+  
 # getitback
 
 **Developer workstation disaster recovery — in one command.**
