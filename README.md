@@ -1,15 +1,15 @@
 <div align="center">
-  
+
 # getitback
 
 **Developer workstation disaster recovery — in one command.**
 
-[![Go Version](https://img.shields.io/badge/go-1.24+-00ADD8?style=flat-square&logo=go)](https://go.dev/)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
-[![Go Report Card](https://goreportcard.com/badge/github.com/shreyansh-shankar/getitback?style=flat-square)](https://goreportcard.com/report/github.com/shreyansh-shankar/getitback)
-[![Release](https://img.shields.io/github/v/release/shreyansh-shankar/getitback?style=flat-square)](https://github.com/shreyansh-shankar/getitback/releases)
-[![CI](https://img.shields.io/github/actions/workflow/status/shreyansh-shankar/getitback/ci.yml?branch=main&label=CI&style=flat-square)](https://github.com/shreyansh-shankar/getitback/actions)
-[![Modules](https://img.shields.io/badge/modules-35+-success?style=flat-square)](#-supported-modules)
+[![Go Version](https://img.shields.io/badge/Go-1.24+-00ADD8?style=flat-square&logo=go&logoColor=white)](https://go.dev/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
+[![Platform](https://img.shields.io/badge/platform-Linux%20%7C%20macOS-lightgrey?style=flat-square&logo=linux&logoColor=white)](https://github.com/shreyansh-shankar/getitback/releases)
+[![CI](https://img.shields.io/github/actions/workflow/status/shreyansh-shankar/getitback/ci.yml?branch=main&style=flat-square&label=CI&logo=github-actions&logoColor=white)](https://github.com/shreyansh-shankar/getitback/actions/workflows/ci.yml)
+[![Modules](https://img.shields.io/badge/Modules-35%2B-22c55e?style=flat-square)](#-supported-modules)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen?style=flat-square)](CONTRIBUTING.md)
 
 </div>
 
