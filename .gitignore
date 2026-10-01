@@ -1,0 +1,39 @@
+# Binaries
+getitback
+getitback-linux-amd64
+getitback-linux-arm64
+getitback-darwin-amd64
+getitback-darwin-arm64
+*.exe
+
+# Build artifacts
+*.tar.gz
+*.tar.gz.sha256
+dist/
+
+# Test artifacts
+coverage.out
+coverage.html
+*.test
+
+# Runtime data
+.tmp/
+*.log
+
+# Editor / IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux
+*~
+
+# Temp files
+*.tmp

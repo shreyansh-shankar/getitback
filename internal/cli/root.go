@@ -12,15 +12,23 @@ import (
 	"github.com/spf13/cobra"
 )
 
-func Execute(manager *module.Manager) {
+// BuildInfo holds version metadata injected at build time via ldflags.
+type BuildInfo struct {
+	Version string
+	Commit  string
+	Date    string
+}
+
+func Execute(manager *module.Manager, build BuildInfo) {
 	cfg, err := config.Load()
 	if err != nil {
 		cobra.CheckErr(err)
 	}
 
 	rootCmd := &cobra.Command{
-		Use:   "getitback",
-		Short: "Developer workstation recovery platform",
+		Use:     "getitback",
+		Short:   "Developer workstation recovery platform",
+		Version: fmt.Sprintf("%s (commit %s, built %s)", build.Version, build.Commit, build.Date),
 		Long: `getitback is a disaster recovery and machine bootstrap tool for developers.
 
 It discovers, backs up, restores, and verifies your entire development environment.`,

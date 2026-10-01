@@ -42,6 +42,15 @@ import (
 	"github.com/shreyansh-shankar/getitback/internal/modules/vscode"
 )
 
+// Build-time version info — injected via:
+//
+//	go build -ldflags="-X main.version=v1.0.0 -X main.commit=abc1234 -X main.date=2026-01-01T00:00:00Z"
+var (
+	version = "dev"
+	commit  = "unknown"
+	date    = "unknown"
+)
+
 func main() {
 	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
 	manager := module.NewManager()
@@ -80,5 +89,5 @@ func main() {
 	manager.Register(repos.NewModule())
 	manager.Register(java.NewModule())
 
-	cli.Execute(manager)
+	cli.Execute(manager, cli.BuildInfo{Version: version, Commit: commit, Date: date})
 }
